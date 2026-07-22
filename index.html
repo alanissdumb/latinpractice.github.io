@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latin Practice</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;800&family=Inter:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        sage: {
+                            50: '#f4f7f4', 100: '#e3ebe3', 200: '#c8d7c8', 300: '#a3bca2',
+                            400: '#87a08b', 500: '#6c8570', 600: '#536a57', 700: '#435547',
+                            800: '#38463c', 900: '#2f3b33',
+                        },
+                        parchment: {
+                            50: '#fdfbf7', 100: '#f7f2e8', 200: '#eee3d0', 300: '#e1ceb1',
+                        },
+                        terracotta: {
+                            500: '#c85a32', 600: '#af4723',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        serif: ['Newsreader', 'Georgia', 'serif'],
+                        classical: ['Cinzel', 'serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(135,160,139,0.4); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(135,160,139,0.7); }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
+        input[type=range]::-webkit-slider-runnable-track { background: #c8d7c8; height: 6px; border-radius: 3px; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -5px; background: #6c8570; height: 16px; width: 16px; border-radius: 50%; }
+        .strike-through { position: relative; }
+        .strike-through::after {
+            content: ''; position: absolute; left: 0; top: 50%; width: 100%; height: 2px;
+            background: #6c8570; opacity: 0.6; transform: scaleX(0); transform-origin: left; transition: transform 0.4s ease;
+        }
+        .strike-through.done::after { transform: scaleX(1); }
+    </style>
+</head>
+<body class="bg-parchment-50 text-stone-800 font-sans min-h-full flex flex-col selection:bg-sage-200 selection:text-sage-900">
+
+    <header class="bg-white/80 backdrop-blur-md border-b border-stone-200 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <div class="flex items-center space-x-1">
+                    <button onclick="navigateTo('home')" class="px-3 py-2 rounded-lg text-stone-700 hover:text-sage-700 hover:bg-stone-100 transition font-medium text-sm flex items-center gap-2">
+                        <i class="fa-solid fa-landmark text-sage-600"></i> Home
+                    </button>
+                    <button onclick="navigateTo('practice_select')" class="px-3 py-2 rounded-lg text-stone-600 hover:text-sage-700 hover:bg-stone-100 transition text-sm font-medium flex items-center gap-2">
+                        <i class="fa-solid fa-dumbbell text-stone-400"></i> Practice
+                    </button>
+                    <button onclick="navigateTo('wordbank')" class="px-3 py-2 rounded-lg text-stone-600 hover:text-sage-700 hover:bg-stone-100 transition text-sm font-medium flex items-center gap-2">
+                        <i class="fa-solid fa-layer-group text-stone-400"></i> Word Bank
+                    </button>
+                    <button onclick="navigateTo('materials')" class="px-3 py-2 rounded-lg text-stone-600 hover:text-sage-700 hover:bg-stone-100 transition text-sm font-medium flex items-center gap-2">
+                        <i class="fa-solid fa-book-bookmark text-stone-400"></i> Materials
+                    </button>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <button onclick="navigateTo('settings')" class="p-2 rounded-lg text-stone-500 hover:text-sage-700 hover:bg-stone-100 transition" title="Settings">
+                        <i class="fa-solid fa-sliders text-base"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main id="appContainer" class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8"></main>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        const DEFAULT_STATE = {
+            view: 'home',
+            stats: { completedToday: 0, streak: 0, totalAnswered: 0, totalCorrect: 0, lastStudyDate: null },
+            settings: {
+                apiKey: '',
+                apiUrl: 'https://api.openai.com/v1',
+                model: 'gpt-3.5-turbo',
+                vocabDirection: 'latToEng',
+                dailyMix: {
+                    vocab: true, declining: true, conjugation: true, genderCase: true, principalParts: true,
+                    latToEng: true, engToLat: true, unseen: false, moodTenseVoice: false,
+                    countPerType: 20
+                },
+                autoAdvance: false,
+                soundEffects: false
+            },
+            materials: {
+                rawText: "puella - girl\nbonus - good\ncurro, currere, cucurri, cursum - to run\nhortor, hortari, hortatus sum - to encourage\nrex, regis - king\nurbs, urbis - city\nmagnus - great\ntimeo, timere, timui - to fear\namo, amare, amavi, amatum - to love\nmiles, militis - soldier\nbellum - war\npax, pacis - peace\nporto, portare, portavi, portatus - to carry\nmitto, mittere, misi, missus - to send",
+                vocabList: [],
+                images: [],
+                parsedNotes: ''
+            },
+            wordBank: [],
+            quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
+            dailyLauncher: { active: false, completed: [], currentType: null, enabledTypes: [] }
+        };
+
+        let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+
+        function loadState() {
+            try {
+                const saved = localStorage.getItem('latin_practice_app_v4');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    state = { ...DEFAULT_STATE, ...parsed };
+                    if (parsed.settings) state.settings = { ...DEFAULT_STATE.settings, ...parsed.settings };
+                    if (parsed.settings && parsed.settings.dailyMix) state.settings.dailyMix = { ...DEFAULT_STATE.settings.dailyMix, ...parsed.settings.dailyMix };
+                    if (parsed.materials) state.materials = { ...DEFAULT_STATE.materials, ...parsed.materials };
+                    if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
+                    if (parsed.dailyLauncher) state.dailyLauncher = { ...DEFAULT_STATE.dailyLauncher, ...parsed.dailyLauncher };
+                }
+            } catch(e) {}
+            parseVocab();
+        }
+
+        // Runs once at startup: pulls images out of IndexedDB (where they now
+        // live) and, if this is the first load after upgrading, migrates any
+        // images left over in the old localStorage-based state into IndexedDB.
+        async function hydrateImages() {
+            const legacyImages = state.materials.images || [];
+            const dbImages = await loadImagesFromDB();
+            if (dbImages.length > 0) {
+                state.materials.images = dbImages;
+            } else if (legacyImages.length > 0) {
+                state.materials.images = legacyImages;
+                await saveImagesToDB(legacyImages);
+            } else {
+                state.materials.images = [];
+            }
+        }
+
+        // Images are base64 strings, which are large. localStorage has a ~5-10MB
+        // total quota shared across the whole app, so storing images there (as
+        // before) risks silently failing to save once you've uploaded a handful
+        // of photos. IndexedDB has a much larger quota (typically hundreds of MB+),
+        // so images now live there instead, separate from the rest of the state.
+        const IMG_DB_NAME = 'latin_practice_images';
+        const IMG_STORE = 'images';
+
+        function openImageDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(IMG_DB_NAME, 1);
+                req.onupgradeneeded = () => { req.result.createObjectStore(IMG_STORE); };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function saveImagesToDB(images) {
+            try {
+                const db = await openImageDB();
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction(IMG_STORE, 'readwrite');
+                    tx.objectStore(IMG_STORE).put(images, 'all');
+                    tx.oncomplete = resolve;
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch(e) { console.warn('Could not save images to IndexedDB', e); }
+        }
+
+        async function loadImagesFromDB() {
+            try {
+                const db = await openImageDB();
+                return await new Promise((resolve) => {
+                    const tx = db.transaction(IMG_STORE, 'readonly');
+                    const req = tx.objectStore(IMG_STORE).get('all');
+                    req.onsuccess = () => resolve(req.result || []);
+                    req.onerror = () => resolve([]);
+                });
+            } catch(e) { return []; }
+        }
+
+        function saveState() {
+            // Strip images out of the localStorage payload — they're persisted
+            // separately via saveImagesToDB() so they don't count against the
+            // localStorage quota.
+            const toSave = JSON.parse(JSON.stringify(state));
+            toSave.materials.images = [];
+            localStorage.setItem('latin_practice_app_v4', JSON.stringify(toSave));
+            saveImagesToDB(state.materials.images);
+        }
+
+        function parseVocab() {
+            const lines = state.materials.rawText.split('\n');
+            state.materials.vocabList = [];
+            lines.forEach(line => {
+                if (!line.trim()) return;
+                const parts = line.split(/[-=:]/);
+                if (parts.length >= 2) {
+                    state.materials.vocabList.push({ latin: parts[0].trim(), english: parts.slice(1).join(' ').trim(), id: Date.now() + Math.random() });
+                }
+            });
+            if (state.wordBank.length === 0 && state.materials.vocabList.length > 0) {
+                state.wordBank = state.materials.vocabList.map((v, i) => ({
+                    ...v, interval: 1, repetitions: 0, ease: 2.5, due: Date.now(), history: []
+                }));
+            }
+        }
+
+        function navigateTo(view) {
+            state.view = view;
+            render();
+            saveState();
+        }
+
+        function render() {
+            const container = document.getElementById('appContainer');
+            switch(state.view) {
+                case 'home': container.innerHTML = viewHome(); break;
+                case 'daily_launcher': container.innerHTML = viewDailyLauncher(); break;
+                case 'practice_select': container.innerHTML = viewPracticeSelect(); break;
+                case 'quiz': container.innerHTML = viewQuiz(); attachKeybinds(); break;
+                case 'materials': container.innerHTML = viewMaterials(); break;
+                case 'wordbank': container.innerHTML = viewWordBank(); break;
+                case 'settings': container.innerHTML = viewSettings(); break;
+                default: container.innerHTML = viewHome();
+            }
+        }
+
+        function viewHome() {
+            const acc = state.stats.totalAnswered > 0 ? Math.round((state.stats.totalCorrect / state.stats.totalAnswered) * 100) : 100;
+            const today = new Date().toDateString();
+            if (state.stats.lastStudyDate !== today && state.stats.lastStudyDate !== null) {
+                state.stats.completedToday = 0;
+                state.stats.lastStudyDate = today;
+                saveState();
+            }
+            
+            return `
+            <div class="animate-fade-in">
+                <div class="mb-8">
+                    <h1 class="text-3xl font-classical font-bold text-stone-900 tracking-tight">Practice Dashboard</h1>
+                    <p class="text-stone-500 font-serif italic mt-1">Audentes fortuna iuvat.</p>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8">
+                    <div class="md:col-span-7 flex flex-col space-y-6">
+                        <button onclick="startDailyLauncher()" class="group text-left bg-sage-500 hover:bg-sage-600 text-white rounded-[2rem] p-8 shadow-lg hover:shadow-xl transition transform hover:-translate-y-1 relative overflow-hidden flex flex-col justify-between min-h-[220px]">
+                            <div class="absolute -right-4 -bottom-4 text-sage-400 opacity-30 text-8xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-sun"></i></div>
+                            <div class="relative z-10">
+                                <span class="bg-white/20 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 inline-block">Daily Custom Mix</span>
+                                <h2 class="text-3xl font-classical font-bold mb-2">Daily Practice</h2>
+                                <p class="text-sage-100 font-serif max-w-sm text-sm">Choose the order you tackle today's categories. Complete them all at your own pace.</p>
+                            </div>
+                            <div class="relative z-10 mt-6 font-bold text-sm bg-white text-sage-800 px-5 py-2.5 rounded-xl inline-flex items-center w-max shadow-sm group-hover:bg-sage-50 transition">
+                                Start Session <i class="fa-solid fa-arrow-right ml-2 text-xs"></i>
+                            </div>
+                        </button>
+
+                        <button onclick="navigateTo('practice_select')" class="group text-left bg-stone-200 hover:bg-stone-300 text-stone-800 rounded-[2rem] p-8 shadow-sm hover:shadow-md transition transform hover:-translate-y-1 relative overflow-hidden flex flex-col justify-between min-h-[180px]">
+                            <div class="absolute -right-4 -bottom-4 text-stone-300 opacity-50 text-8xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-layer-group"></i></div>
+                            <div class="relative z-10">
+                                <span class="bg-stone-300/60 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 inline-block text-stone-700">Infinite Drills</span>
+                                <h2 class="text-2xl font-classical font-bold mb-2">Specific Practice</h2>
+                                <p class="text-stone-600 font-serif max-w-sm text-sm">Isolate a specific skill and drill infinitely.</p>
+                            </div>
+                        </button>
+                    </div>
+
+                    <div class="md:col-span-5 bg-sage-300/30 border border-sage-300/50 rounded-[2rem] p-8 flex flex-col justify-between shadow-inner">
+                        <div>
+                            <div class="flex justify-between items-center mb-6">
+                                <h3 class="text-xl font-classical font-bold text-stone-800"><i class="fa-solid fa-chart-line text-sage-600 mr-2"></i> Statistics</h3>
+                                <span class="bg-sage-200 text-sage-800 text-xs px-3 py-1 rounded-full font-bold">Streak: 🔥 ${state.stats.streak}</span>
+                            </div>
+                            <div class="space-y-4">
+                                <div class="bg-white/80 p-5 rounded-2xl border border-stone-200/60 shadow-sm">
+                                    <div class="text-xs font-bold text-stone-500 uppercase tracking-wide">All-Time Accuracy</div>
+                                    <div class="text-4xl font-bold font-classical text-sage-800 mt-1">${acc}%</div>
+                                    <div class="w-full bg-stone-200 h-2 rounded-full mt-3 overflow-hidden">
+                                        <div class="bg-sage-500 h-2 rounded-full" style="width: ${acc}%"></div>
+                                    </div>
+                                </div>
+                                <div class="bg-white/80 p-5 rounded-2xl border border-stone-200/60 shadow-sm flex items-center justify-between">
+                                    <div>
+                                        <div class="text-xs font-bold text-stone-500 uppercase tracking-wide">Daily Progress</div>
+                                        <div class="text-xl font-bold text-stone-800 mt-1">${state.stats.completedToday} items</div>
+                                    </div>
+                                    <div class="w-12 h-12 rounded-full border-4 border-sage-500 flex items-center justify-center text-sage-600 font-bold">
+                                        <i class="fa-solid fa-check"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-6 pt-4 border-t border-sage-300/50 text-xs text-stone-600 flex justify-between items-center">
+                            <span>Word Bank: ${state.wordBank.length} cards</span>
+                            <span>Materials: ${state.materials.vocabList.length} parsed</span>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function viewDailyLauncher() {
+            const dm = state.settings.dailyMix;
+            const typeMeta = {
+                vocab: { name: 'Vocabulary Recall', icon: 'fa-book-open', color: 'sage' },
+                declining: { name: 'Declining', icon: 'fa-list-ol', color: 'sage' },
+                conjugation: { name: 'Conjugation', icon: 'fa-font', color: 'sage' },
+                genderCase: { name: 'Number / Gender / Case', icon: 'fa-shapes', color: 'sage' },
+                principalParts: { name: 'Principal Parts', icon: 'fa-font', color: 'sage' },
+                latToEng: { name: 'Latin to English', icon: 'fa-language', color: 'sage' },
+                engToLat: { name: 'English to Latin', icon: 'fa-pen-nib', color: 'terracotta' },
+                moodTenseVoice: { name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', color: 'sage' },
+                unseen: { name: 'Unseen Practice', icon: 'fa-file-lines', color: 'sage' },
+            };
+            
+            const enabled = Object.keys(dm).filter(k => k !== 'countPerType' && dm[k]);
+            const completed = state.dailyLauncher.completed;
+            const allDone = enabled.length > 0 && enabled.every(e => completed.includes(e));
+            const remaining = enabled.filter(e => !completed.includes(e));
+            
+            if (allDone) {
+                const correct = state.dailyLauncher.results ? state.dailyLauncher.results.filter(r => r.correct).length : 0;
+                const total = state.dailyLauncher.results ? state.dailyLauncher.results.length : 0;
+                return `
+                <div class="animate-fade-in max-w-2xl mx-auto text-center py-20">
+                    <div class="w-20 h-20 bg-sage-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg text-white text-3xl">
+                        <i class="fa-solid fa-trophy"></i>
+                    </div>
+                    <h1 class="text-3xl font-classical font-bold text-stone-900 mb-2">Daily Mix Complete!</h1>
+                    <p class="text-stone-500 font-serif italic mb-8">Well done. All categories finished for today.</p>
+                    <div class="bg-white rounded-2xl border border-stone-200 p-8 shadow-sm mb-8">
+                        <div class="text-5xl font-bold font-classical text-sage-700 mb-2">${correct}/${total}</div>
+                        <div class="text-sm text-stone-500 uppercase tracking-wider font-bold">Correct Answers</div>
+                    </div>
+                    <button onclick="endDailySession()" class="px-8 py-3 bg-stone-900 hover:bg-black text-white font-bold rounded-xl shadow transition">Return Home</button>
+                </div>`;
+            }
+
+            return `
+            <div class="animate-fade-in max-w-4xl mx-auto">
+                <div class="flex items-center justify-between mb-8">
+                    <div>
+                        <h1 class="text-3xl font-classical font-bold text-stone-800">Daily Practice</h1>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">Pick a category to start. Finish them all.</p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-xs font-bold text-stone-400 uppercase tracking-wider">Progress</div>
+                        <div class="text-2xl font-bold font-classical text-sage-700">${completed.length} / ${enabled.length}</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="md:col-span-1 space-y-3">
+                        ${enabled.map(key => {
+                            const meta = typeMeta[key];
+                            const isDone = completed.includes(key);
+                            return `
+                            <button onclick="${isDone ? '' : `startDailyCategory('${key}')`}" 
+                                class="w-full text-left p-4 rounded-2xl border transition relative overflow-hidden ${isDone ? 'bg-stone-100 border-stone-200 opacity-60' : 'bg-white border-stone-200 hover:border-sage-300 hover:shadow-md'}">
+                                <div class="flex items-center gap-3 ${isDone ? 'strike-through done' : ''}">
+                                    <div class="w-8 h-8 rounded-lg bg-${meta.color}-100 text-${meta.color}-600 flex items-center justify-center flex-shrink-0 text-sm">
+                                        <i class="fa-solid ${meta.icon}"></i>
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="font-bold text-stone-800 text-sm truncate">${meta.name}</div>
+                                        <div class="text-[10px] text-stone-400 font-medium">${state.settings.dailyMix.countPerType} questions</div>
+                                    </div>
+                                    ${isDone ? '<i class="fa-solid fa-check text-sage-600"></i>' : '<i class="fa-solid fa-chevron-right text-stone-300"></i>'}
+                                </div>
+                            </button>`;
+                        }).join('')}
+                    </div>
+
+                    <div class="md:col-span-2 bg-white rounded-3xl border border-stone-200 p-8 flex flex-col items-center justify-center text-center shadow-sm">
+                        <div class="w-16 h-16 bg-sage-100 rounded-full flex items-center justify-center text-sage-600 text-2xl mb-4">
+                            <i class="fa-solid fa-sun"></i>
+                        </div>
+                        <h3 class="font-classical font-bold text-xl text-stone-800 mb-2">Ready when you are</h3>
+                        <p class="text-stone-500 text-sm font-serif max-w-xs mb-6">
+                            ${remaining.length} categor${remaining.length === 1 ? 'y' : 'ies'} remaining. 
+                            Choose one from the list to begin.
+                        </p>
+                        <div class="flex gap-2 flex-wrap justify-center">
+                            ${remaining.map(k => {
+                                const m = typeMeta[k];
+                                return `<span class="px-3 py-1 bg-sage-50 text-sage-700 text-xs font-bold rounded-full border border-sage-200">${m.name}</span>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function viewPracticeSelect() {
+            const modes = [
+                { id: 'vocab', name: 'Vocabulary Recall', icon: 'fa-book-open', desc: 'Type the translation', color: 'sage' },
+                { id: 'declining', name: 'Declining', icon: 'fa-list-ol', desc: 'Noun declensions', color: 'sage' },
+                { id: 'conjugation', name: 'Conjugation', icon: 'fa-font', color: 'sage', desc: 'Verb forms' },
+                { id: 'genderCase', name: 'Number / Gender / Case', icon: 'fa-shapes', desc: 'Grammar identification', color: 'sage' },
+                { id: 'principalParts', name: 'Principal Parts', icon: 'fa-font', desc: 'Verb principal parts', color: 'sage' },
+                { id: 'latToEng', name: 'Latin to English', icon: 'fa-language', desc: 'Translate phrases', color: 'sage' },
+                { id: 'engToLat', name: 'English to Latin', icon: 'fa-pen-nib', desc: 'Verb-last composition', color: 'terracotta' },
+                { id: 'moodTenseVoice', name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', desc: 'Identify verb forms', color: 'sage' },
+                { id: 'unseen', name: 'Unseen Practice', icon: 'fa-file-lines', desc: 'Longer passages', color: 'sage' },
+            ];
+            return `
+            <div class="animate-fade-in space-y-6">
+                <div class="flex items-center justify-between border-b border-stone-200 pb-4">
+                    <div>
+                        <h1 class="text-3xl font-classical font-bold text-stone-800">Practice Modes</h1>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">Select a topic. Infinite questions.</p>
+                    </div>
+                    <button onclick="navigateTo('home')" class="text-stone-500 hover:text-stone-800 text-sm font-medium"><i class="fa-solid fa-arrow-left mr-1"></i> Back</button>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${modes.map(m => `
+                        <button onclick="startSpecific('${m.id}')" class="bg-white hover:bg-${m.color}-50 border border-stone-200 p-6 rounded-2xl shadow-sm text-left transition group h-full flex flex-col">
+                            <div class="w-10 h-10 rounded-xl bg-${m.color}-100 text-${m.color}-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                                <i class="fa-solid ${m.icon}"></i>
+                            </div>
+                            <h3 class="font-classical font-bold text-lg text-stone-800">${m.name}</h3>
+                            <p class="text-xs text-stone-500 mt-1">${m.desc}</p>
+                        </button>
+                    `).join('')}
+                </div>
+            </div>`;
+        }
+
+        function viewQuiz() {
+            const q = state.quiz.questions[state.quiz.index];
+            if (!q) return `<div class="text-center p-10">Loading...</div>`;
+
+            const badges = {
+                vocab: 'Vocabulary Recall',
+                declining: 'Declining',
+                conjugation: 'Conjugation',
+                genderCase: 'Number / Gender / Case',
+                principalParts: 'Principal Parts',
+                latToEng: 'Latin to English Phrase',
+                engToLat: 'English to Latin Phrase',
+                moodTenseVoice: 'Mood / Tense / Voice',
+                unseen: 'Unseen Passage'
+            };
+
+            return viewTypedQuiz(q, badges[q.type] || q.type);
+        }
+
+        function viewTypedQuiz(q, badge) {
+            const isEngLat = q.type === 'engToLat';
+            const isVocab = q.type === 'vocab';
+            const isDecl = q.type === 'declining';
+            const isConj = q.type === 'conjugation';
+            return `
+            <div class="max-w-3xl mx-auto animate-fade-in w-full py-4 flex flex-col justify-center min-h-[70vh]">
+                <div class="flex justify-between items-center mb-6">
+                    <button onclick="${state.dailyLauncher.active ? 'backToLauncher()' : 'navigateTo(\'home\')'}" class="text-stone-500 hover:text-stone-800 bg-white border border-stone-200 w-10 h-10 rounded-full flex items-center justify-center shadow-sm">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                    <div class="text-xs font-bold text-stone-400 uppercase tracking-widest">
+                        ${state.dailyLauncher.active ? 'Daily Mix' : (state.quiz.isInfinite ? 'Infinite Practice' : 'Practice')}
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl p-8 sm:p-12 shadow-xl border border-stone-100 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden">
+                    <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
+
+                    <h2 class="text-3xl sm:text-4xl font-classical font-bold text-stone-900 leading-snug">${q.prompt}</h2>
+
+                    <div class="w-full pt-4">
+                        ${isEngLat ? renderEngLatBuilder() : (isVocab || isDecl || isConj ? renderVocabInput() : renderStandardInput())}
+                    </div>
+
+                    <div id="feedbackBox" class="w-full hidden text-left bg-parchment-100 border border-stone-200 rounded-2xl p-6 mt-4 animate-fade-in"></div>
+
+                    <button id="submitBtn" onclick="evaluateAnswer()" class="w-full sm:w-auto px-10 py-4 bg-sage-600 hover:bg-sage-700 text-white font-bold rounded-xl shadow-lg transition text-lg mt-4">
+                        Submit
+                    </button>
+                    <div class="text-[10px] text-stone-400 font-medium italic"><i class="fa-solid fa-keyboard mr-1"></i> Press Enter to submit. If you don't know, press Enter to reveal, then Enter again to skip.</div>
+                </div>
+            </div>`;
+        }
+
+        function renderStandardInput() {
+            return `<textarea id="ans_standard" rows="3" class="w-full bg-stone-50 border-2 border-stone-200 rounded-2xl p-5 text-xl font-serif text-center focus:outline-none focus:border-sage-400 focus:bg-white shadow-inner resize-none custom-scrollbar" placeholder="Type your answer..."></textarea>`;
+        }
+
+        function renderVocabInput() {
+            return `<input type="text" id="ans_vocab" class="w-full bg-stone-50 border-2 border-stone-200 rounded-2xl p-5 text-2xl font-serif text-center focus:outline-none focus:border-sage-400 focus:bg-white shadow-inner" placeholder="Type your answer...">`;
+        }
+
+        function renderEngLatBuilder() {
+            return `
+            <div class="w-full flex items-end gap-3">
+                <div class="relative flex-1">
+                    <label class="absolute -top-3 left-4 bg-white px-2 text-[10px] font-bold uppercase text-stone-500 tracking-wider">Main Clause</label>
+                    <textarea id="mainClause" rows="2" class="w-full bg-stone-50 border-2 border-stone-200 rounded-2xl p-4 text-xl font-serif focus:outline-none focus:border-sage-400 focus:bg-white shadow-inner resize-none" placeholder="Translate the main phrase..."></textarea>
+                </div>
+                <div class="relative w-1/3">
+                    <label class="absolute -top-3 left-4 bg-white px-2 text-[10px] font-bold uppercase text-terracotta-600 tracking-wider"><i class="fa-solid fa-thumbtack mr-1"></i> Verb</label>
+                    <input type="text" id="verbBox" class="w-full bg-amber-50/50 border-2 border-terracotta-400/60 rounded-2xl p-4 text-xl font-serif focus:outline-none focus:border-terracotta-500 focus:ring-4 focus:ring-terracotta-500/10 shadow-inner" placeholder="Verb...">
+                </div>
+            </div>
+            <div class="text-[10px] text-stone-400 font-medium text-left italic mt-2"><i class="fa-solid fa-keyboard mr-1"></i> Tab to switch boxes. Teacher requires verb-final.</div>`;
+        }
+
+        function viewMaterials() {
+            return `
+            <div class="animate-fade-in space-y-6">
+                <div class="flex justify-between items-end border-b border-stone-200 pb-4">
+                    <div>
+                        <h1 class="text-3xl font-classical font-bold text-stone-800">My Materials</h1>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">Upload PDFs, images, Anki APKG, or paste text.</p>
+                    </div>
+                    <button onclick="exportHTML()" class="bg-stone-200 hover:bg-stone-300 text-stone-800 text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition">
+                        <i class="fa-solid fa-code mr-1"></i> Export HTML
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 flex flex-col">
+                        <h3 class="font-classical font-bold text-lg mb-3">Input Corpus</h3>
+                        
+                        <div class="grid grid-cols-3 gap-2 mb-4">
+                            <label class="bg-sage-50 hover:bg-sage-100 border border-sage-200 text-sage-700 text-xs font-bold py-2 px-2 rounded-lg cursor-pointer text-center transition flex items-center justify-center">
+                                <i class="fa-solid fa-file-pdf mr-1"></i> PDF
+                                <input type="file" accept=".pdf" class="hidden" onchange="handleFileUpload(event, 'pdf')">
+                            </label>
+                            <label class="bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 text-xs font-bold py-2 px-2 rounded-lg cursor-pointer text-center transition flex items-center justify-center">
+                                <i class="fa-solid fa-box-archive mr-1"></i> APKG
+                                <input type="file" accept=".apkg" class="hidden" onchange="handleFileUpload(event, 'apkg')">
+                            </label>
+                            <label class="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-bold py-2 px-2 rounded-lg cursor-pointer text-center transition flex items-center justify-center">
+                                <i class="fa-solid fa-image mr-1"></i> Image
+                                <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(event, 'image')">
+                            </label>
+                        </div>
+
+                        <textarea id="rawInputArea" rows="10" class="w-full flex-1 text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.rawText}</textarea>
+                        
+                        <button onclick="saveMaterials()" class="w-full bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 rounded-xl shadow transition">Save & Parse Corpus</button>
+                    </div>
+
+                    <div class="space-y-6">
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                            <h3 class="font-classical font-bold text-lg mb-3">Parsed Vocabulary (${state.materials.vocabList.length})</h3>
+                            <div class="max-h-[240px] overflow-y-auto custom-scrollbar border border-stone-100 rounded-xl p-2 bg-stone-50">
+                                <ul class="divide-y divide-stone-200 text-sm font-serif">
+                                    ${state.materials.vocabList.map(v => `
+                                        <li class="py-2 px-2 flex justify-between">
+                                            <strong class="text-stone-900">${v.latin}</strong>
+                                            <span class="text-stone-600">${v.english}</span>
+                                        </li>
+                                    `).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                            <h3 class="font-classical font-bold text-lg mb-3">Uploaded Images (${state.materials.images.length})</h3>
+                            <div class="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto custom-scrollbar">
+                                ${state.materials.images.map((img, i) => `
+                                    <div class="relative group aspect-square rounded-lg overflow-hidden border border-stone-200">
+                                        <img src="${img}" class="w-full h-full object-cover">
+                                        <button onclick="removeImage(${i})" class="absolute top-1 right-1 w-5 h-5 bg-red-500 text-white rounded-full text-[10px] opacity-0 group-hover:opacity-100 transition"><i class="fa-solid fa-xmark"></i></button>
+                                    </div>
+                                `).join('') || '<p class="text-xs text-stone-400 italic">No images uploaded.</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function viewWordBank() {
+            return `
+            <div class="animate-fade-in space-y-6">
+                <div class="flex items-center justify-between border-b border-stone-200 pb-4">
+                    <div>
+                        <h1 class="text-3xl font-classical font-bold text-stone-800">Word Bank</h1>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">Manage your vocabulary. Used for Anki-style review.</p>
+                    </div>
+                    <button onclick="navigateTo('home')" class="text-stone-500 hover:text-stone-800 text-sm font-medium"><i class="fa-solid fa-arrow-left mr-1"></i> Back</button>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                        <h3 class="font-classical font-bold text-lg mb-4">Add Word</h3>
+                        <div class="space-y-3">
+                            <input type="text" id="wbLatin" placeholder="Latin word" class="w-full border border-stone-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-sage-500 outline-none">
+                            <input type="text" id="wbEnglish" placeholder="English meaning" class="w-full border border-stone-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-sage-500 outline-none">
+                            <button onclick="addWordBank()" class="w-full bg-sage-600 hover:bg-sage-700 text-white font-bold py-2 rounded-xl transition">Add to Bank</button>
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-stone-100">
+                            <button onclick="syncWordBank()" class="w-full bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold py-2 rounded-xl transition text-xs">
+                                <i class="fa-solid fa-rotate mr-1"></i> Sync from Materials
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="font-classical font-bold text-lg">All Cards (${state.wordBank.length})</h3>
+                            <input type="text" id="wbSearch" placeholder="Search..." oninput="filterWordBank()" class="border border-stone-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-sage-500 outline-none">
+                        </div>
+                        <div class="max-h-[500px] overflow-y-auto custom-scrollbar border border-stone-100 rounded-xl">
+                            <table class="w-full text-sm">
+                                <thead class="bg-stone-50 text-xs uppercase text-stone-500 font-bold sticky top-0">
+                                    <tr><th class="text-left p-3">Latin</th><th class="text-left p-3">English</th><th class="text-right p-3">Actions</th></tr>
+                                </thead>
+                                <tbody id="wbTableBody" class="divide-y divide-stone-100 font-serif">
+                                    ${state.wordBank.map((w, i) => `
+                                        <tr class="hover:bg-stone-50">
+                                            <td class="p-3 font-semibold text-stone-900">${w.latin}</td>
+                                            <td class="p-3 text-stone-600">${w.english}</td>
+                                            <td class="p-3 text-right">
+                                                <button onclick="deleteWordBank(${i})" class="text-stone-400 hover:text-red-500 transition"><i class="fa-solid fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function viewSettings() {
+            const dm = state.settings.dailyMix;
+            const types = [
+                { key: 'vocab', label: 'Vocabulary Recall' },
+                { key: 'declining', label: 'Declining' },
+                { key: 'conjugation', label: 'Conjugation' },
+                { key: 'genderCase', label: 'Number / Gender / Case' },
+                { key: 'principalParts', label: 'Principal Parts' },
+                { key: 'latToEng', label: 'Latin to English Phrases' },
+                { key: 'engToLat', label: 'English to Latin Phrases' },
+                { key: 'moodTenseVoice', label: 'Mood / Tense / Voice' },
+                { key: 'unseen', label: 'Unseen Passages' },
+            ];
+            return `
+            <div class="animate-fade-in max-w-3xl mx-auto space-y-6">
+                <div class="flex items-center justify-between border-b border-stone-200 pb-4">
+                    <h1 class="text-3xl font-classical font-bold text-stone-800">Settings</h1>
+                    <button onclick="navigateTo('home')" class="text-stone-500 hover:text-stone-800 text-sm font-medium"><i class="fa-solid fa-arrow-left mr-1"></i> Back</button>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 space-y-6">
+                    <div>
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">AI Connection</h3>
+                        <div class="space-y-3">
+                            <div>
+                                <label class="block text-xs font-semibold text-stone-600 mb-1">API Key</label>
+                                <input type="password" id="cfg_key" value="${state.settings.apiKey}" placeholder="sk-..." class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs font-semibold text-stone-600 mb-1">API URL</label>
+                                    <input type="text" id="cfg_url" value="${state.settings.apiUrl}" placeholder="https://api..." class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-stone-600 mb-1">Model</label>
+                                    <input type="text" id="cfg_model" value="${state.settings.model}" placeholder="gpt-4o" class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                                </div>
+                            </div>
+                            <p class="text-[11px] text-stone-400">AI reads your uploaded text materials (vocab, notes, past tests) to generate questions in your teacher's style. Uploaded images are stored for your own reference but aren't sent to the AI yet.</p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6">
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Vocabulary Direction</h3>
+                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-200">
+                            <div class="flex items-center justify-between">
+                                <span class="font-medium text-stone-700 text-sm">Flashcard prompt direction</span>
+                                <div class="flex bg-white rounded-lg border border-stone-300 p-1">
+                                    <button onclick="setVocabDir('latToEng')" id="btn_latToEng" class="px-4 py-1.5 rounded-md text-xs font-bold transition ${state.settings.vocabDirection === 'latToEng' ? 'bg-sage-600 text-white' : 'text-stone-600 hover:bg-stone-100'}">Latin → English</button>
+                                    <button onclick="setVocabDir('engToLat')" id="btn_engToLat" class="px-4 py-1.5 rounded-md text-xs font-bold transition ${state.settings.vocabDirection === 'engToLat' ? 'bg-sage-600 text-white' : 'text-stone-600 hover:bg-stone-100'}">English → Latin</button>
+                                </div>
+                            </div>
+                            <p class="text-[11px] text-stone-400 mt-2">Determines which side you see first during Vocabulary Recall.</p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6">
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Daily Mix Configuration</h3>
+                        <div class="space-y-3">
+                            ${types.map(t => `
+                                <div class="flex items-center justify-between bg-stone-50 p-3 rounded-xl">
+                                    <label class="flex items-center space-x-3 cursor-pointer">
+                                        <input type="checkbox" id="dm_${t.key}" ${dm[t.key] ? 'checked' : ''} class="rounded text-sage-600 focus:ring-sage-500 w-4 h-4">
+                                        <span class="font-medium text-stone-700 text-sm">${t.label}</span>
+                                    </label>
+                                </div>
+                            `).join('')}
+                            
+                            <div class="bg-sage-50 border border-sage-200 p-4 rounded-xl mt-4">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="font-bold text-stone-700 text-sm">Questions per enabled type</span>
+                                    <input type="number" id="dm_count" min="1" max="100" value="${dm.countPerType}" class="w-20 p-2 bg-white border border-stone-300 rounded-lg text-center font-bold outline-none focus:ring-2 focus:ring-sage-500 text-sm" oninput="document.getElementById('dm_slider').value = this.value">
+                                </div>
+                                <input type="range" id="dm_slider" min="1" max="100" value="${dm.countPerType}" class="w-full" oninput="document.getElementById('dm_count').value = this.value">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6">
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Preferences</h3>
+                        <div class="space-y-3 text-sm">
+                            <label class="flex items-center space-x-3 cursor-pointer">
+                                <input type="checkbox" id="pref_auto" ${state.settings.autoAdvance ? 'checked' : ''} class="rounded text-sage-600 focus:ring-sage-500 w-4 h-4">
+                                <span class="font-medium text-stone-700">Auto-advance on correct answer</span>
+                            </label>
+                            <label class="flex items-center space-x-3 cursor-pointer">
+                                <input type="checkbox" id="pref_sound" ${state.settings.soundEffects ? 'checked' : ''} class="rounded text-sage-600 focus:ring-sage-500 w-4 h-4">
+                                <span class="font-medium text-stone-700">Sound effects</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6 flex gap-3">
+                        <button onclick="saveSettings()" class="flex-1 py-3 bg-sage-600 hover:bg-sage-700 text-white rounded-xl font-bold shadow transition">Save Settings</button>
+                        <button onclick="resetProgress()" class="px-4 py-3 bg-rose-100 hover:bg-rose-200 text-rose-700 rounded-xl font-bold text-sm transition">Reset Progress</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        // ==================== DAILY LAUNCHER LOGIC ====================
+
+        function startDailyLauncher() {
+            const dm = state.settings.dailyMix;
+            const enabled = Object.keys(dm).filter(k => k !== 'countPerType' && dm[k]);
+            
+            if (enabled.length === 0) {
+                alert('Enable at least one category in Settings > Daily Mix.');
+                return navigateTo('settings');
+            }
+            
+            state.dailyLauncher = {
+                active: true,
+                completed: [],
+                currentType: null,
+                enabledTypes: enabled,
+                results: []
+            };
+            
+            saveState();
+            navigateTo('daily_launcher');
+        }
+
+        async function startDailyCategory(type) {
+            state.dailyLauncher.currentType = type;
+            state.quiz.isInfinite = false;
+            state.quiz.index = 0;
+            state.quiz.answered = false;
+            state.quiz.results = [];
+            state.quiz.questions = await generateQuestions(type, state.settings.dailyMix.countPerType);
+            saveState();
+            navigateTo('quiz');
+        }
+
+        function backToLauncher() {
+            navigateTo('daily_launcher');
+        }
+
+        function finishDailyCategory() {
+            const type = state.dailyLauncher.currentType;
+            if (type && !state.dailyLauncher.completed.includes(type)) {
+                state.dailyLauncher.completed.push(type);
+            }
+            if (state.quiz.results) {
+                state.dailyLauncher.results = state.dailyLauncher.results || [];
+                state.dailyLauncher.results.push(...state.quiz.results);
+            }
+            state.dailyLauncher.currentType = null;
+            saveState();
+            navigateTo('daily_launcher');
+        }
+
+        function endDailySession() {
+            state.dailyLauncher = { active: false, completed: [], currentType: null, enabledTypes: [], results: [] };
+            saveState();
+            navigateTo('home');
+        }
+
+        // ==================== ACTIONS ====================
+
+        function setVocabDir(dir) {
+            state.settings.vocabDirection = dir;
+            render();
+        }
+
+        function saveMaterials() {
+            state.materials.rawText = document.getElementById('rawInputArea').value;
+            parseVocab();
+            saveState();
+            render();
+        }
+
+        // Modern Anki (2.1.50+, i.e. basically every export today) stores the real
+        // deck data in a zstd-compressed collection.anki21b file, and keeps
+        // collection.anki2 around only as an empty/placeholder stub for very old
+        // Anki versions. Reading collection.anki2 directly (the old approach) picks
+        // up that empty stub, which is why cards silently failed to import.
+        async function getCollectionBytes(zip) {
+            if (zip.file("collection.anki21b")) {
+                const raw = await zip.file("collection.anki21b").async("uint8array");
+                if (typeof fzstd === 'undefined') {
+                    throw new Error("Couldn't load the zstd decompressor (fzstd) — check your internet connection.");
+                }
+                return fzstd.decompress(raw);
+            }
+            if (zip.file("collection.anki21")) {
+                return await zip.file("collection.anki21").async("uint8array");
+            }
+            if (zip.file("collection.anki2")) {
+                return await zip.file("collection.anki2").async("uint8array");
+            }
+            throw new Error("No collection database found inside this .apkg file.");
+        }
+
+        async function handleFileUpload(event, type) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const textarea = document.getElementById('rawInputArea');
+
+            if (type === 'pdf') {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                let text = `\n\n--- PDF: ${file.name} ---\n`;
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const content = await page.getTextContent();
+                    text += content.items.map(item => item.str).join(' ') + '\n';
+                }
+                textarea.value += text;
+            } else if (type === 'apkg') {
+                try {
+                    const zip = await JSZip.loadAsync(file);
+                    const dbFile = await getCollectionBytes(zip);
+                    const SQL = await initSqlJs({ locateFile: filename => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${filename}` });
+                    const db = new SQL.Database(dbFile);
+                    const res = db.exec("SELECT flds FROM notes");
+                    let text = `\n\n--- APKG: ${file.name} ---\n`;
+                    let cardCount = 0;
+                    if (res.length > 0) {
+                        res[0].values.forEach(val => {
+                            const fields = val[0].split('\x1f');
+                            if (fields.length >= 2) {
+                                const lat = fields[0].replace(/<[^>]*>?/gm, '').trim();
+                                const eng = fields[1].replace(/<[^>]*>?/gm, '').trim();
+                                if (lat && eng) { text += `${lat} - ${eng}\n`; cardCount++; }
+                            }
+                        });
+                    }
+                    if (cardCount === 0) {
+                        alert('No flashcards were found inside this .apkg file. It may use a note type this parser can\'t read, or be empty.');
+                    }
+                    textarea.value += text;
+                } catch(e) {
+                    console.error(e);
+                    alert('Error parsing APKG: ' + e.message);
+                }
+            } else if (type === 'image') {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    state.materials.images.push(e.target.result);
+                    saveState();
+                    render();
+                };
+                reader.readAsDataURL(file);
+                return;
+            }
+            event.target.value = '';
+        }
+
+        function removeImage(idx) {
+            state.materials.images.splice(idx, 1);
+            saveState();
+            render();
+        }
+
+        function addWordBank() {
+            const lat = document.getElementById('wbLatin').value.trim();
+            const eng = document.getElementById('wbEnglish').value.trim();
+            if (!lat || !eng) return;
+            state.wordBank.push({
+                latin: lat, english: eng, id: Date.now(),
+                interval: 1, repetitions: 0, ease: 2.5, due: Date.now(), history: []
+            });
+            saveState();
+            document.getElementById('wbLatin').value = '';
+            document.getElementById('wbEnglish').value = '';
+            render();
+        }
+
+        function deleteWordBank(idx) {
+            state.wordBank.splice(idx, 1);
+            saveState();
+            render();
+        }
+
+        function syncWordBank() {
+            parseVocab();
+            const existing = new Set(state.wordBank.map(w => w.latin));
+            state.materials.vocabList.forEach(v => {
+                if (!existing.has(v.latin)) {
+                    state.wordBank.push({
+                        latin: v.latin, english: v.english, id: Date.now() + Math.random(),
+                        interval: 1, repetitions: 0, ease: 2.5, due: Date.now(), history: []
+                    });
+                }
+            });
+            saveState();
+            render();
+        }
+
+        function filterWordBank() {
+            const q = document.getElementById('wbSearch').value.toLowerCase();
+            const rows = document.querySelectorAll('#wbTableBody tr');
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(q) ? '' : 'none';
+            });
+        }
+
+        function saveSettings() {
+            state.settings.apiKey = document.getElementById('cfg_key').value;
+            state.settings.apiUrl = document.getElementById('cfg_url').value;
+            state.settings.model = document.getElementById('cfg_model').value;
+            state.settings.dailyMix.countPerType = parseInt(document.getElementById('dm_count').value) || 20;
+            
+            ['vocab','declining','conjugation','genderCase','principalParts','latToEng','engToLat','moodTenseVoice','unseen'].forEach(k => {
+                state.settings.dailyMix[k] = document.getElementById('dm_' + k).checked;
+            });
+            
+            state.settings.autoAdvance = document.getElementById('pref_auto').checked;
+            state.settings.soundEffects = document.getElementById('pref_sound').checked;
+            saveState();
+            navigateTo('home');
+        }
+
+        function resetProgress() {
+            if (!confirm('Reset ALL progress? This cannot be undone.')) return;
+            state.stats = { completedToday: 0, streak: 0, totalAnswered: 0, totalCorrect: 0, lastStudyDate: null };
+            state.wordBank.forEach(w => { w.interval = 1; w.repetitions = 0; w.ease = 2.5; w.due = Date.now(); w.history = []; });
+            state.dailyLauncher = { active: false, completed: [], currentType: null, enabledTypes: [], results: [] };
+            saveState();
+            navigateTo('home');
+        }
+
+        // ==================== QUIZ ENGINE ====================
+
+        async function startSpecific(type) {
+            state.quiz.isInfinite = true;
+            state.quiz.type = type;
+            state.quiz.index = 0;
+            state.quiz.answered = false;
+            state.quiz.results = [];
+            state.quiz.questions = await generateQuestions(type, 5);
+            navigateTo('quiz');
+        }
+
+        function getDeclension(word) {
+            const w = word.toLowerCase();
+            if (w.endsWith('a')) return ['puella', 'puella', 'puellam', 'puellae', 'puellae', 'puella'];
+            if (w.endsWith('us')) return ['servus', 'serve', 'servum', 'servi', 'servo', 'serve'];
+            if (w.endsWith('um')) return ['bellum', 'bellum', 'bellum', 'belli', 'bello', 'bellum'];
+            if (w.endsWith('er') || w.endsWith('is') || w.endsWith('x') || w.endsWith('s')) return ['rex', 'rex', 'regem', 'regis', 'regi', 'rege'];
+            return [w, w, w, w, w, w];
+        }
+
+        function getConjugation(word) {
+            const w = word.toLowerCase();
+            // passive present indicative
+            if (w.endsWith('o')) return ['portor', 'portaris', 'portatur', 'portamur', 'portamini', 'portantur'];
+            if (w.endsWith('or')) return ['hortor', 'hortaris', 'hortatur', 'hortamur', 'hortamini', 'hortantur'];
+            return [w + 'r', w + 'ris', w + 'tur', w + 'mur', w + 'mini', w + 'ntur'];
+        }
+
+        // Shared helper for every AI call in the app. Both question generation
+        // and answer marking used to duplicate this fetch — now there's one
+        // place to fix if the API shape ever changes (e.g. switching providers).
+        // Set jsonMode=true to request/parse a JSON object response.
+        async function callAI(prompt, jsonMode) {
+            if (!state.settings.apiKey || !state.settings.apiUrl) return null;
+            const body = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
+            if (jsonMode) body.response_format = { type: 'json_object' };
+            const res = await fetch(`${state.settings.apiUrl}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.settings.apiKey}` },
+                body: JSON.stringify(body)
+            });
+            if (!res.ok) throw new Error(`AI request failed (${res.status})`);
+            const data = await res.json();
+            const content = data.choices[0].message.content;
+            return jsonMode ? JSON.parse(content) : content;
+        }
+
+        async function generateQuestions(type, count) {
+            const vocab = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
+            if (vocab.length === 0) vocab.push({latin:'puella',english:'girl'}, {latin:'bonus',english:'good'});
+            
+            if (state.settings.apiKey && state.settings.apiUrl && type !== 'vocab' && type !== 'declining' && type !== 'conjugation') {
+                try {
+                    const prompt = `Generate ${count} Latin ${type} practice questions. 
+Style based on: ${state.materials.rawText.substring(0, 800)}...
+Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"..."}]}`;
+                    const parsed = await callAI(prompt, true);
+                    if (parsed && parsed.questions && parsed.questions.length > 0) return parsed.questions;
+                } catch(e) { console.warn('AI gen failed, using local', e); }
+            }
+
+            const questions = [];
+            const dir = state.settings.vocabDirection;
+            
+            for (let i = 0; i < count; i++) {
+                const v = vocab[Math.floor(Math.random() * vocab.length)];
+                let q = { type };
+                
+                switch(type) {
+                    case 'vocab':
+                        if (dir === 'latToEng') {
+                            q = { type: 'vocab', prompt: v.latin, target: v.english, extra: '' };
+                        } else {
+                            q = { type: 'vocab', prompt: v.english, target: v.latin, extra: '' };
+                        }
+                        break;
+                    case 'latToEng':
+                        q.prompt = `${v.latin} in urbe habitat.`;
+                        q.target = `The ${v.english} lives in the city.`;
+                        break;
+                    case 'engToLat':
+                        q.prompt = `The ${v.english} lives in the city.`;
+                        q.target = `${v.latin} in urbe habitat`;
+                        break;
+                    case 'declining':
+                        const stem = v.latin.replace(/(a|us|um)$/,'');
+                        const forms = getDeclension(v.latin);
+                        q.prompt = `Decline: ${v.latin}`;
+                        q.target = `Nom. ${forms[0]}, Voc. ${forms[1]}, Acc. ${forms[2]}, Gen. ${forms[3]}, Dat. ${forms[4]}, Abl. ${forms[5]}`;
+                        break;
+                    case 'conjugation':
+                        const conjForms = getConjugation(v.latin);
+                        q.prompt = `Conjugate (passive present): ${v.latin}`;
+                        q.target = `1st: ${conjForms[0]}, 2nd: ${conjForms[1]}, 3rd: ${conjForms[2]}, 1st pl: ${conjForms[3]}, 2nd pl: ${conjForms[4]}, 3rd pl: ${conjForms[5]}`;
+                        break;
+                    case 'genderCase':
+                        q.prompt = `What is the gender and case of "${v.latin}"?`;
+                        q.target = `Masculine / Feminine / Neuter (context dependent)`;
+                        break;
+                    case 'principalParts':
+                        // Generate with -us PPP
+                        const base = v.latin.replace(/(o|or)$/,'');
+                        q.prompt = `Give principal parts for: ${v.latin}`;
+                        q.target = `${v.latin}, ${base}re, ${base}vi, ${base}tus`;
+                        break;
+                    case 'moodTenseVoice':
+                        q.prompt = `Identify mood, tense, and voice: "${v.latin}"`;
+                        q.target = `Indicative, Present, Active (example)`;
+                        break;
+                    case 'unseen':
+                        q.prompt = `Read: ${v.latin} ad urbem ambulavit. Quid fecit?`;
+                        q.target = `He/she walked to the city.`;
+                        break;
+                }
+                questions.push(q);
+            }
+            return questions;
+        }
+
+        function attachKeybinds() {
+            const main = document.getElementById('mainClause');
+            const verb = document.getElementById('verbBox');
+            const std = document.getElementById('ans_standard');
+            const vcb = document.getElementById('ans_vocab');
+            
+            if (main && verb) {
+                main.addEventListener('keydown', (e) => {
+                    if (e.key === 'Tab') { e.preventDefault(); verb.focus(); }
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEnter(); }
+                });
+                verb.addEventListener('keydown', (e) => {
+                    if (e.key === 'Tab') { e.preventDefault(); main.focus(); }
+                    if (e.key === 'Enter') { e.preventDefault(); handleEnter(); }
+                });
+            }
+            
+            if (std) {
+                std.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEnter(); }
+                });
+            }
+            
+            if (vcb) {
+                vcb.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); handleEnter(); }
+                });
+                vcb.focus();
+            }
+        }
+
+        function handleEnter() {
+            if (state.quiz.answered) {
+                nextQuestion();
+            } else {
+                evaluateAnswer();
+            }
+        }
+
+        async function evaluateAnswer() {
+            const q = state.quiz.questions[state.quiz.index];
+            const btn = document.getElementById('submitBtn');
+            let userAns = "";
+            const isVocab = q.type === 'vocab';
+            const isEngLat = q.type === 'engToLat';
+            
+            if (isEngLat) {
+                const m = document.getElementById('mainClause').value.trim();
+                const v = document.getElementById('verbBox').value.trim();
+                userAns = `${m} ${v}`.trim();
+            } else if (isVocab) {
+                userAns = document.getElementById('ans_vocab').value.trim();
+            } else {
+                userAns = document.getElementById('ans_standard').value.trim();
+            }
+            
+            state.quiz.answered = true;
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+            
+            let feedback = '';
+            let isCorrect = false;
+            const cleanAns = userAns.toLowerCase().replace(/[.,!?;:]/g,'').trim();
+            const cleanTgt = q.target.toLowerCase().replace(/[.,!?;:]/g,'').trim();
+            
+            // If blank, treat as "don't know"
+            if (userAns === '') {
+                isCorrect = false;
+            } else if (isVocab) {
+                isCorrect = cleanAns === cleanTgt || cleanTgt.includes(cleanAns) && cleanAns.length > 2;
+            } else {
+                isCorrect = cleanAns === cleanTgt || (cleanTgt.length > 10 && cleanAns.includes(cleanTgt.split(' ').slice(0,3).join(' ')));
+            }
+            
+            if (state.settings.apiKey && state.settings.apiUrl && !isCorrect && userAns !== '') {
+                try {
+                    const prompt = `Student answered: "${userAns}"\nCorrect answer: "${q.target}"\nQuestion: "${q.prompt}"\nGive 1-2 sentence teacher feedback on what was wrong (tense, agreement, word order, etc). Be concise.`;
+                    feedback = await callAI(prompt, false);
+                } catch(e) {}
+            }
+            
+            const fb = document.getElementById('feedbackBox');
+            fb.classList.remove('hidden');
+            
+            if (userAns === '') {
+                fb.innerHTML = `
+                    <div class="text-sm border-b border-stone-200 pb-2 mb-2 font-bold uppercase tracking-wider text-stone-500">
+                        <i class="fa-solid fa-eye mr-1"></i> Revealed
+                    </div>
+                    <div class="space-y-1 text-sm font-serif text-stone-800">
+                        <p><strong class="font-sans text-xs uppercase text-stone-500">Correct Answer:</strong> ${q.target}</p>
+                    </div>
+                `;
+            } else {
+                fb.innerHTML = `
+                    <div class="text-sm border-b border-stone-200 pb-2 mb-2 font-bold uppercase tracking-wider ${isCorrect ? 'text-sage-700' : 'text-terracotta-600'}">
+                        ${isCorrect ? '<i class="fa-solid fa-check-circle mr-1"></i> Optime!' : '<i class="fa-solid fa-triangle-exclamation mr-1"></i> Feedback'}
+                    </div>
+                    <div class="space-y-1 text-sm font-serif text-stone-800">
+                        <p><strong class="font-sans text-xs uppercase text-stone-500">Correct:</strong> ${q.target}</p>
+                        <p class="pt-1"><strong class="font-sans text-xs uppercase text-stone-500">Yours:</strong> <span class="${isCorrect ? 'text-sage-700' : 'text-terracotta-700'}">${userAns}</span></p>
+                        ${feedback ? `<p class="pt-2 text-stone-600 italic border-t border-stone-200 mt-2 pt-2">${feedback}</p>` : ''}
+                    </div>
+                `;
+            }
+            
+            btn.innerHTML = `Next <span class="text-xs opacity-70 ml-1">(Enter)</span> <i class="fa-solid fa-arrow-right ml-2"></i>`;
+            btn.className = "w-full sm:w-auto px-10 py-4 bg-stone-900 hover:bg-black text-white font-bold rounded-xl shadow-lg transition text-lg mt-4";
+            btn.disabled = false;
+            btn.onclick = () => { recordTypedResult(isCorrect && userAns !== ''); nextQuestion(); };
+            
+            state.stats.completedToday++;
+            state.stats.totalAnswered++;
+            if (isCorrect) state.stats.totalCorrect++;
+            updateStreak();
+            saveState();
+        }
+
+        function recordTypedResult(correct) {
+            state.quiz.results.push({ correct });
+        }
+
+        function updateStreak() {
+            const today = new Date().toDateString();
+            if (state.stats.lastStudyDate !== today) {
+                const yesterday = new Date(Date.now() - 86400000).toDateString();
+                if (state.stats.lastStudyDate === yesterday) state.stats.streak++;
+                else state.stats.streak = 1;
+                state.stats.lastStudyDate = today;
+            }
+        }
+
+        async function nextQuestion() {
+            state.quiz.index++;
+            state.quiz.answered = false;
+            
+            if (state.quiz.isInfinite && state.quiz.index >= state.quiz.questions.length - 1) {
+                const more = await generateQuestions(state.quiz.type, 5);
+                state.quiz.questions.push(...more);
+            }
+            
+            if (!state.quiz.isInfinite && state.quiz.index >= state.quiz.questions.length) {
+                if (state.dailyLauncher.active) {
+                    finishDailyCategory();
+                } else {
+                    const correct = state.quiz.results.filter(r => r.correct).length;
+                    const total = state.quiz.results.length;
+                    alert(`Session complete! ${correct}/${total} correct.`);
+                    navigateTo('home');
+                }
+                return;
+            }
+            
+            render();
+        }
+
+        function exportHTML() {
+            const code = document.documentElement.outerHTML;
+            const blob = new Blob([code], { type: 'text/html' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'latin_practice.html';
+            a.click();
+        }
+
+        async function init() {
+            loadState();
+            await hydrateImages();
+            render();
+        }
+        init();
+    </script>
+</body>
+</html>
