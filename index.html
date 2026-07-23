@@ -211,9 +211,39 @@
         // perfect, but "to " in the gloss and comma-count in the Latin form are
         // reliable enough signals for how vocab lists are normally written.
         function classifyPos(latin, english) {
-            const commaParts = latin.split(',').length;
-            if (/^to\s/i.test(english.trim()) || commaParts >= 3) return 'verb';
+            const rawParts = latin.split(',').map(s => s.trim());
+            // Adjectives are conventionally abbreviated like "fessus, -a, -um"
+            // (a 3-part comma list) — that's endings, not principal parts, so
+            // it must never be classified as a verb regardless of part count.
+            if (rawParts.length >= 2 && rawParts.slice(1).some(p => p.startsWith('-'))) return 'noun';
+            if (/^to\s/i.test(english.trim()) || rawParts.length >= 3) return 'verb';
             return 'noun'; // covers nouns and adjectives — both fine to plug into a nominal slot
+        }
+
+        // Splits a vocab line into [latin, english]. Prefers a hyphen/equals/colon
+        // surrounded by whitespace as the actual field separator — a bare,
+        // unspaced hyphen is usually part of a Latin abbreviation (e.g. "-a, -um")
+        // or a footnote marker, not the divider between Latin and English.
+        function splitVocabLine(line) {
+            let m = line.match(/^(.*?)\s[-=:]\s(.*)$/);
+            if (!m) m = line.match(/^(.*?)[=:](.*)$/);
+            if (!m) m = line.match(/^(.*?)-(.*)$/);
+            if (!m) return null;
+            return [m[1].trim(), m[2].trim()];
+        }
+
+        // Some source material lists English before Latin (common in some
+        // textbook glossaries), which would otherwise get stored backwards.
+        // Flag a field as "looks like English" two ways: common English
+        // function words (skipping "a"/"an" — too short, and collide with
+        // Latin abbreviation letters like the "-a" in "fessus, -a, -um"), and
+        // for single-word glosses with no stopword at all, common English
+        // derivational suffixes that essentially never end a Latin headword.
+        function looksEnglish(s) {
+            const t = s.trim();
+            if (/\b(to|the|of|is|was|were|be|been|and|who|that|with|not|his|her)\b/i.test(t)) return true;
+            if (!t.includes(',') && /(ly|ing|ed|tion|ness|ful|less|ment|able|ible|ous|ive|man|woman)$/i.test(t)) return true;
+            return false;
         }
 
         function parseVocab() {
@@ -221,10 +251,17 @@
             state.materials.vocabList = [];
             lines.forEach(line => {
                 if (!line.trim()) return;
-                const parts = line.split(/[-=:]/);
-                if (parts.length >= 2) {
-                    const latin = parts[0].trim();
-                    const english = parts.slice(1).join(' ').trim();
+                const split = splitVocabLine(line);
+                if (!split) return;
+                let [latin, english] = split;
+                // Strip trailing footnote-style digits some PDF extractions glue
+                // onto a word (e.g. "neco 1" from a superscript reference marker).
+                latin = latin.replace(/\s+\d{1,2}$/, '').trim();
+                english = english.replace(/\s+\d{1,2}$/, '').trim();
+                if (looksEnglish(latin) && !looksEnglish(english)) {
+                    [latin, english] = [english, latin];
+                }
+                if (latin && english) {
                     state.materials.vocabList.push({ latin, english, pos: classifyPos(latin, english), id: Date.now() + Math.random() });
                 }
             });
