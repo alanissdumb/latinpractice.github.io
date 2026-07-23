@@ -103,7 +103,7 @@
                 vocabDirection: 'latToEng',
                 dailyMix: {
                     vocab: true, declining: true, conjugation: true, genderCase: true, principalParts: true,
-                    latToEng: true, engToLat: true, unseen: false, moodTenseVoice: false,
+                    latToEng: true, engToLat: true, latSentence: true, engSentence: true, unseen: false, moodTenseVoice: false,
                     countPerType: 20
                 },
                 autoAdvance: false,
@@ -113,7 +113,8 @@
                 rawText: "puella - girl\nbonus - good\ncurro, currere, cucurri, cursum - to run\nhortor, hortari, hortatus sum - to encourage\nrex, regis - king\nurbs, urbis - city\nmagnus - great\ntimeo, timere, timui - to fear\namo, amare, amavi, amatum - to love\nmiles, militis - soldier\nbellum - war\npax, pacis - peace\nporto, portare, portavi, portatus - to carry\nmitto, mittere, misi, missus - to send",
                 vocabList: [],
                 images: [],
-                parsedNotes: ''
+                grammarNotes: '',
+                styleExamples: ''
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
@@ -326,6 +327,8 @@
                 principalParts: { name: 'Principal Parts', icon: 'fa-font', color: 'sage' },
                 latToEng: { name: 'Latin to English', icon: 'fa-language', color: 'sage' },
                 engToLat: { name: 'English to Latin', icon: 'fa-pen-nib', color: 'terracotta' },
+                latSentence: { name: 'Latin to English Sentences', icon: 'fa-align-left', color: 'sage' },
+                engSentence: { name: 'English to Latin Sentences', icon: 'fa-align-left', color: 'terracotta' },
                 moodTenseVoice: { name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', color: 'sage' },
                 unseen: { name: 'Unseen Practice', icon: 'fa-file-lines', color: 'sage' },
             };
@@ -417,6 +420,8 @@
                 { id: 'principalParts', name: 'Principal Parts', icon: 'fa-font', desc: 'Verb principal parts', color: 'sage' },
                 { id: 'latToEng', name: 'Latin to English', icon: 'fa-language', desc: 'Translate phrases', color: 'sage' },
                 { id: 'engToLat', name: 'English to Latin', icon: 'fa-pen-nib', desc: 'Verb-last composition', color: 'terracotta' },
+                { id: 'latSentence', name: 'Latin to English Sentences', icon: 'fa-align-left', desc: 'Full sentence translation', color: 'sage' },
+                { id: 'engSentence', name: 'English to Latin Sentences', icon: 'fa-align-left', desc: 'Full sentence, verb-last composition', color: 'terracotta' },
                 { id: 'moodTenseVoice', name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', desc: 'Identify verb forms', color: 'sage' },
                 { id: 'unseen', name: 'Unseen Practice', icon: 'fa-file-lines', desc: 'Longer passages', color: 'sage' },
             ];
@@ -455,6 +460,8 @@
                 principalParts: 'Principal Parts',
                 latToEng: 'Latin to English Phrase',
                 engToLat: 'English to Latin Phrase',
+                latSentence: 'Latin to English Sentence',
+                engSentence: 'English to Latin Sentence',
                 moodTenseVoice: 'Mood / Tense / Voice',
                 unseen: 'Unseen Passage'
             };
@@ -463,7 +470,7 @@
         }
 
         function viewTypedQuiz(q, badge) {
-            const isEngLat = q.type === 'engToLat';
+            const isEngLat = q.type === 'engToLat' || q.type === 'engSentence';
             const isVocab = q.type === 'vocab';
             const isDecl = q.type === 'declining';
             const isConj = q.type === 'conjugation';
@@ -554,7 +561,13 @@
 
                         <textarea id="rawInputArea" rows="10" class="w-full flex-1 text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.rawText}</textarea>
                         
-                        <button onclick="saveMaterials()" class="w-full bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 rounded-xl shadow transition">Save & Parse Corpus</button>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button onclick="saveMaterials()" class="w-full bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 rounded-xl shadow transition">Save & Parse Corpus</button>
+                            <button id="sortBtn" onclick="autoSortCorpus()" class="w-full bg-white hover:bg-stone-50 text-sage-700 font-bold py-3 rounded-xl shadow-sm border border-sage-300 transition text-sm">
+                                <i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Sort with AI
+                            </button>
+                        </div>
+                        <p class="text-[11px] text-stone-400 mt-2">"Sort with AI" separates real vocab from grammar rules/tables mixed into pasted text — vocab stays here, grammar moves to the Grammar Notes box below. Replaces this box's content with just what it finds, so review after running it. Needs an API key set in Settings.</p>
                     </div>
 
                     <div class="space-y-6">
@@ -584,6 +597,20 @@
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                    <h3 class="font-classical font-bold text-lg mb-1">Grammar Notes</h3>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Rules, paradigms, word-order requirements, example sentences. Used as context so generated questions follow your teacher's grammar focus — never quizzed as vocab.</p>
+                    <textarea id="grammarInputArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.grammarNotes}</textarea>
+                    <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Grammar Notes</button>
+                </div>
+
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+                    <h3 class="font-classical font-bold text-lg mb-1">Style Examples (Past Tests)</h3>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Paste real graded sentences from past tests (either direction) so generated Latin/English Sentences actually match your teacher's real style, sentence complexity, and vocabulary — not just generic phrases. Use "Sort with AI" above or a PDF upload to fill this in automatically, or paste directly here.</p>
+                    <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.styleExamples}</textarea>
+                    <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
             </div>`;
         }
@@ -652,6 +679,8 @@
                 { key: 'principalParts', label: 'Principal Parts' },
                 { key: 'latToEng', label: 'Latin to English Phrases' },
                 { key: 'engToLat', label: 'English to Latin Phrases' },
+                { key: 'latSentence', label: 'Latin to English Sentences' },
+                { key: 'engSentence', label: 'English to Latin Sentences' },
                 { key: 'moodTenseVoice', label: 'Mood / Tense / Voice' },
                 { key: 'unseen', label: 'Unseen Passages' },
             ];
@@ -680,7 +709,7 @@
                                     <input type="text" id="cfg_model" value="${state.settings.model}" placeholder="gpt-4o" class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
                                 </div>
                             </div>
-                            <p class="text-[11px] text-stone-400">AI reads your uploaded text materials (vocab, notes, past tests) to generate questions in your teacher's style. Uploaded images are stored for your own reference but aren't sent to the AI yet.</p>
+                            <p class="text-[11px] text-stone-400">AI reads your Input Corpus (vocab) and Grammar Notes to generate questions in your teacher's style and grammar focus. Uploaded images are stored for your own reference but aren't sent to the AI yet.</p>
                         </div>
                     </div>
 
@@ -809,9 +838,49 @@
 
         function saveMaterials() {
             state.materials.rawText = document.getElementById('rawInputArea').value;
+            const gArea = document.getElementById('grammarInputArea');
+            if (gArea) state.materials.grammarNotes = gArea.value;
+            const eArea = document.getElementById('styleExamplesArea');
+            if (eArea) state.materials.styleExamples = eArea.value;
             parseVocab();
             saveState();
             render();
+        }
+
+        // Manual "Sort with AI" button: runs the same vocab/grammar split used
+        // for PDF uploads on whatever's currently pasted into the corpus box —
+        // for when a grammar sheet gets pasted as text rather than uploaded.
+        async function autoSortCorpus() {
+            if (!state.settings.apiKey || !state.settings.apiUrl) {
+                alert('Add an API key in Settings first — sorting vocab from grammar needs the AI.');
+                return;
+            }
+            const btn = document.getElementById('sortBtn');
+            const area = document.getElementById('rawInputArea');
+            const original = area.value;
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin mr-1"></i> Sorting...`;
+            try {
+                const sorted = await sortMaterialWithAI(original, 'pasted corpus');
+                area.value = sorted.vocab.join('\n');
+                if (sorted.grammar.trim()) {
+                    const gArea = document.getElementById('grammarInputArea');
+                    const combined = (state.materials.grammarNotes ? state.materials.grammarNotes + '\n\n' : '') + sorted.grammar.trim();
+                    state.materials.grammarNotes = combined;
+                    if (gArea) gArea.value = combined;
+                }
+                if (sorted.examples && sorted.examples.trim()) {
+                    const eArea = document.getElementById('styleExamplesArea');
+                    const combinedEx = (state.materials.styleExamples ? state.materials.styleExamples + '\n\n' : '') + sorted.examples.trim();
+                    state.materials.styleExamples = combinedEx;
+                    if (eArea) eArea.value = combinedEx;
+                }
+                saveMaterials();
+            } catch(e) {
+                alert('AI sorting failed: ' + e.message);
+            }
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Sort with AI`;
         }
 
         // Modern Anki (2.1.50+, i.e. basically every export today) stores the real
@@ -844,13 +913,21 @@
             if (type === 'pdf') {
                 const arrayBuffer = await file.arrayBuffer();
                 const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-                let text = `\n\n--- PDF: ${file.name} ---\n`;
+                let rawExtracted = '';
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const page = await pdf.getPage(i);
                     const content = await page.getTextContent();
-                    text += content.items.map(item => item.str).join(' ') + '\n';
+                    rawExtracted += content.items.map(item => item.str).join(' ') + '\n';
                 }
-                textarea.value += text;
+
+                const avgCharsPerPage = rawExtracted.trim().length / pdf.numPages;
+                if (avgCharsPerPage < 20) {
+                    alert(`This PDF looks like a scanned image with little to no selectable text (~${Math.round(avgCharsPerPage)} characters/page extracted). Text extraction can't read scanned pages — try exporting a text-based PDF, or paste/retype the content directly into the corpus box instead.`);
+                    event.target.value = '';
+                    return;
+                }
+
+                await sortAndInsertMaterial(rawExtracted, file.name, textarea);
             } else if (type === 'apkg') {
                 try {
                     const zip = await JSZip.loadAsync(file);
@@ -947,7 +1024,7 @@
             state.settings.model = document.getElementById('cfg_model').value;
             state.settings.dailyMix.countPerType = parseInt(document.getElementById('dm_count').value) || 20;
             
-            ['vocab','declining','conjugation','genderCase','principalParts','latToEng','engToLat','moodTenseVoice','unseen'].forEach(k => {
+            ['vocab','declining','conjugation','genderCase','principalParts','latToEng','engToLat','latSentence','engSentence','moodTenseVoice','unseen'].forEach(k => {
                 state.settings.dailyMix[k] = document.getElementById('dm_' + k).checked;
             });
             
@@ -1014,14 +1091,93 @@
             return jsonMode ? JSON.parse(content) : content;
         }
 
+        // Shared by PDF upload and the manual "Sort with AI" button: takes raw
+        // extracted/pasted text, splits it via AI into vocab vs grammar, and
+        // writes each into the right box. Falls back to dumping raw text into
+        // the vocab box (with a warning) if no AI is configured yet.
+        async function sortAndInsertMaterial(rawText, sourceLabel, textareaEl) {
+            if (!state.settings.apiKey || !state.settings.apiUrl) {
+                alert(`No AI configured yet, so "${sourceLabel}" is being added as raw text — if it's a grammar sheet, this will likely need manual cleanup, or add an API key in Settings first so it can be sorted automatically.`);
+                textareaEl.value += `\n\n--- ${sourceLabel} (unsorted — add an AI key for auto-sorting) ---\n${rawText}`;
+                return;
+            }
+            try {
+                const sorted = await sortMaterialWithAI(rawText, sourceLabel);
+                if (sorted.vocab.length > 0) {
+                    textareaEl.value += `\n\n--- ${sourceLabel} (vocab) ---\n` + sorted.vocab.join('\n');
+                }
+                if (sorted.grammar.trim()) {
+                    const gArea = document.getElementById('grammarInputArea');
+                    const combined = (state.materials.grammarNotes ? state.materials.grammarNotes + '\n\n' : '') + `--- ${sourceLabel} (grammar) ---\n` + sorted.grammar.trim();
+                    state.materials.grammarNotes = combined;
+                    if (gArea) gArea.value = combined;
+                }
+                if (sorted.examples && sorted.examples.trim()) {
+                    const eArea = document.getElementById('styleExamplesArea');
+                    const combinedEx = (state.materials.styleExamples ? state.materials.styleExamples + '\n\n' : '') + `--- ${sourceLabel} (examples) ---\n` + sorted.examples.trim();
+                    state.materials.styleExamples = combinedEx;
+                    if (eArea) eArea.value = combinedEx;
+                }
+                if (sorted.vocab.length === 0 && !sorted.grammar.trim() && !(sorted.examples && sorted.examples.trim())) {
+                    textareaEl.value += `\n\n--- ${sourceLabel} (AI found nothing usable, added raw) ---\n${rawText}`;
+                }
+                saveState();
+            } catch(e) {
+                console.error(e);
+                alert(`AI sorting failed (${e.message}) — adding "${sourceLabel}" as raw text instead. You can sort it manually, or try again once the AI connection is working.`);
+                textareaEl.value += `\n\n--- ${sourceLabel} (unsorted, AI sort failed) ---\n${rawText}`;
+            }
+        }
+        // grammar sheets mix in paradigm tables, rules, and example sentences.
+        // Feeding that straight into parseVocab() (which splits every line on
+        // -/=/: ) turns grammar rules into garbage "vocab" pairs. This asks the
+        // AI to separate genuine vocab items from everything else, so grammar
+        // content lands in its own notes field instead of the quiz pool.
+        async function sortMaterialWithAI(rawText, sourceLabel) {
+            const prompt = `You are processing raw text extracted from a Latin study document (source: ${sourceLabel}), which may be a vocab list, a grammar sheet, or a past test/worksheet containing full example sentences with translations.
+
+Split it into three categories:
+1. "vocab": an array of strings, each formatted as "latin - english" (use full principal parts where given, e.g. "amo, amare, amavi, amatum - to love"). Only genuine single-word/short vocabulary entries — not sentences, not grammar rules.
+2. "grammar": a single string containing grammar content — declension/conjugation tables, case/tense/mood rules, word-order rules, explanations — with vocabulary and example sentences removed.
+3. "examples": a single string containing full graded example sentences with their translations, one pair per line as "Latin sentence = English translation" (either direction), taken verbatim from test/worksheet content. This is for sentences a teacher actually wrote or graded — not simple made-up phrases, and not grammar-rule explanations.
+
+If a section clearly isn't Latin study material (e.g. page headers, OCR noise), omit it entirely rather than forcing it into any category.
+
+Return ONLY JSON in this exact shape, no other text: {"vocab": ["...", "..."], "grammar": "...", "examples": "..."}
+
+Raw text:
+"""
+${rawText.substring(0, 6000)}
+"""`;
+            const parsed = await callAI(prompt, true);
+            return {
+                vocab: (parsed && Array.isArray(parsed.vocab)) ? parsed.vocab : [],
+                grammar: (parsed && typeof parsed.grammar === 'string') ? parsed.grammar : '',
+                examples: (parsed && typeof parsed.examples === 'string') ? parsed.examples : ''
+            };
+        }
+
         async function generateQuestions(type, count) {
             const vocab = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
             if (vocab.length === 0) vocab.push({latin:'puella',english:'girl'}, {latin:'bonus',english:'good'});
             
             if (state.settings.apiKey && state.settings.apiUrl && type !== 'vocab' && type !== 'declining' && type !== 'conjugation') {
                 try {
-                    const prompt = `Generate ${count} Latin ${type} practice questions. 
-Style based on: ${state.materials.rawText.substring(0, 800)}...
+                    const grammarContext = state.materials.grammarNotes
+                        ? `\nGrammar rules and requirements to follow (e.g. required word order, tenses/moods in focus, forms taught so far): ${state.materials.grammarNotes.substring(0, 1000)}`
+                        : '';
+                    const styleContext = state.materials.styleExamples
+                        ? `\nActual example sentences from past tests — match this exact style, sentence complexity, and vocabulary usage as closely as possible: ${state.materials.styleExamples.substring(0, 1500)}`
+                        : '';
+                    // latToEng/engToLat are deliberately short phrases; latSentence/engSentence
+                    // need to be genuinely full, exam-style sentences, not just longer phrases.
+                    const lengthInstruction = (type === 'latSentence' || type === 'engSentence')
+                        ? '\nEach question must be a FULL, grammatically complete Latin sentence (not a short phrase) — use subordinate/relative clauses, ablative absolutes, passive or deponent verbs, or participles where appropriate, matching the complexity of any style examples and grammar notes given below. Do not produce simple 3-4 word phrases.'
+                        : (type === 'latToEng' || type === 'engToLat')
+                            ? '\nEach question should be a short, simple phrase or single short clause — not a long multi-clause sentence.'
+                            : '';
+                    const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}
+Vocabulary/style reference: ${state.materials.rawText.substring(0, 800)}${grammarContext}${styleContext}
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"..."}]}`;
                     const parsed = await callAI(prompt, true);
                     if (parsed && parsed.questions && parsed.questions.length > 0) return parsed.questions;
@@ -1051,6 +1207,34 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.prompt = `The ${v.english} lives in the city.`;
                         q.target = `${v.latin} in urbe habitat`;
                         break;
+                    case 'latSentence': {
+                        const v2 = vocab[Math.floor(Math.random() * vocab.length)];
+                        const bank = [
+                            { lat: `${v.latin}, qui in urbe habitabat, ${v2.latin} vidit.`, eng: `The ${v.english}, who was living in the city, saw the ${v2.english}.` },
+                            { lat: `Cum ${v.latin} advenisset, cives laeti erant.`, eng: `When the ${v.english} had arrived, the citizens were happy.` },
+                            { lat: `${v.latin} a ${v2.latin} laudatus est.`, eng: `The ${v.english} was praised by the ${v2.english}.` },
+                            { lat: `Militibus in urbe pugnantibus, ${v.latin} fugit.`, eng: `With the soldiers fighting in the city, the ${v.english} fled.` },
+                            { lat: `Nemo dubitat quin ${v.latin} ${v2.latin} amet.`, eng: `No one doubts that the ${v.english} loves the ${v2.english}.` }
+                        ];
+                        const pick = bank[i % bank.length];
+                        q.prompt = pick.lat;
+                        q.target = pick.eng;
+                        break;
+                    }
+                    case 'engSentence': {
+                        const v2 = vocab[Math.floor(Math.random() * vocab.length)];
+                        const bank = [
+                            { eng: `The ${v.english}, having been warned by the ${v2.english}, did not delay.`, lat: `${v.latin}, a ${v2.latin} monitus, non cunctatus est` },
+                            { eng: `Although the ${v.english} was brave, he feared the ${v2.english}.`, lat: `quamquam ${v.latin} fortis erat, ${v2.latin} timuit` },
+                            { eng: `The ${v.english} will be sent to the city by the ${v2.english}.`, lat: `${v.latin} ab ${v2.latin} in urbem mittetur` },
+                            { eng: `We do not know where the ${v.english} carried the ${v2.english}.`, lat: `nescimus ubi ${v.latin} ${v2.latin} portaverit` },
+                            { eng: `The ${v.english} having been captured, the citizens rejoiced.`, lat: `${v.latin} capto, cives gavisi sunt` }
+                        ];
+                        const pick = bank[i % bank.length];
+                        q.prompt = pick.eng;
+                        q.target = pick.lat;
+                        break;
+                    }
                     case 'declining':
                         const stem = v.latin.replace(/(a|us|um)$/,'');
                         const forms = getDeclension(v.latin);
@@ -1130,7 +1314,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             const btn = document.getElementById('submitBtn');
             let userAns = "";
             const isVocab = q.type === 'vocab';
-            const isEngLat = q.type === 'engToLat';
+            const isEngLat = q.type === 'engToLat' || q.type === 'engSentence';
             
             if (isEngLat) {
                 const m = document.getElementById('mainClause').value.trim();
