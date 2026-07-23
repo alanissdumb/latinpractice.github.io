@@ -206,6 +206,16 @@
             saveImagesToDB(state.materials.images);
         }
 
+        // Rough part-of-speech guess so templates/prompts don't shove a verb's
+        // principal parts into a noun slot (or vice versa). Not linguistically
+        // perfect, but "to " in the gloss and comma-count in the Latin form are
+        // reliable enough signals for how vocab lists are normally written.
+        function classifyPos(latin, english) {
+            const commaParts = latin.split(',').length;
+            if (/^to\s/i.test(english.trim()) || commaParts >= 3) return 'verb';
+            return 'noun'; // covers nouns and adjectives — both fine to plug into a nominal slot
+        }
+
         function parseVocab() {
             const lines = state.materials.rawText.split('\n');
             state.materials.vocabList = [];
@@ -213,7 +223,9 @@
                 if (!line.trim()) return;
                 const parts = line.split(/[-=:]/);
                 if (parts.length >= 2) {
-                    state.materials.vocabList.push({ latin: parts[0].trim(), english: parts.slice(1).join(' ').trim(), id: Date.now() + Math.random() });
+                    const latin = parts[0].trim();
+                    const english = parts.slice(1).join(' ').trim();
+                    state.materials.vocabList.push({ latin, english, pos: classifyPos(latin, english), id: Date.now() + Math.random() });
                 }
             });
             if (state.wordBank.length === 0 && state.materials.vocabList.length > 0) {
@@ -1055,21 +1067,75 @@
             navigateTo('quiz');
         }
 
-        function getDeclension(word) {
-            const w = word.toLowerCase();
-            if (w.endsWith('a')) return ['puella', 'puella', 'puellam', 'puellae', 'puellae', 'puella'];
-            if (w.endsWith('us')) return ['servus', 'serve', 'servum', 'servi', 'servo', 'serve'];
-            if (w.endsWith('um')) return ['bellum', 'bellum', 'bellum', 'belli', 'bello', 'bellum'];
-            if (w.endsWith('er') || w.endsWith('is') || w.endsWith('x') || w.endsWith('s')) return ['rex', 'rex', 'regem', 'regis', 'regi', 'rege'];
-            return [w, w, w, w, w, w];
+        // Approximates real Latin morphology (no macrons, so 2nd vs 3rd conj
+        // "-ere" verbs aren't distinguishable by spelling alone) — good enough
+        // for practice purposes, but the previous version didn't even look at
+        // the word: it returned the same fixed example paradigm regardless of
+        // what was asked, which is its own version of the noun/verb confusion.
+        function getDeclension(latinEntry) {
+            // Vocab is often given as "word, genitive" (e.g. "rex, regis") —
+            // use the genitive if given, since 3rd declension can't be
+            // reliably derived from the nominative alone.
+            const parts = latinEntry.split(',').map(s => s.trim());
+            const nom = parts[0];
+            const w = nom.toLowerCase();
+            if (parts.length >= 2 && /is$/i.test(parts[1])) {
+                const stem = parts[1].slice(0, -2);
+                return [nom, nom, stem + 'em', parts[1], stem + 'i', stem + 'e'];
+            }
+            if (w.endsWith('a')) {
+                const stem = nom.slice(0, -1);
+                return [nom, nom, stem + 'am', stem + 'ae', stem + 'ae', stem + 'a'];
+            }
+            if (w.endsWith('us')) {
+                const stem = nom.slice(0, -2);
+                return [nom, stem + 'e', stem + 'um', stem + 'i', stem + 'o', stem + 'o'];
+            }
+            if (w.endsWith('um')) {
+                const stem = nom.slice(0, -2);
+                return [nom, nom, nom, stem + 'i', stem + 'o', stem + 'o'];
+            }
+            // No genitive given and doesn't match 1st/2nd declension patterns —
+            // likely 3rd declension; without the genitive this can only be a rough guess.
+            return [nom, nom, nom + 'em', nom + 'is', nom + 'i', nom + 'e'];
         }
 
-        function getConjugation(word) {
-            const w = word.toLowerCase();
-            // passive present indicative
-            if (w.endsWith('o')) return ['portor', 'portaris', 'portatur', 'portamur', 'portamini', 'portantur'];
-            if (w.endsWith('or')) return ['hortor', 'hortaris', 'hortatur', 'hortamur', 'hortamini', 'hortantur'];
-            return [w + 'r', w + 'ris', w + 'tur', w + 'mur', w + 'mini', w + 'ntur'];
+        function getConjugation(latinEntry) {
+            // Vocab is often given as full principal parts (e.g. "amo, amare,
+            // amavi, amatum") — the infinitive (2nd part) reliably identifies
+            // the conjugation class; the 1st person alone doesn't.
+            const parts = latinEntry.split(',').map(s => s.trim());
+            const inf = (parts.length >= 2 ? parts[1] : parts[0]).toLowerCase();
+            if (inf.endsWith('are')) { // 1st conjugation, regular active (e.g. "amare")
+                const stem = inf.slice(0, -3);
+                return [stem + 'or', stem + 'aris', stem + 'atur', stem + 'amur', stem + 'amini', stem + 'antur'];
+            }
+            if (inf.endsWith('ari')) { // 1st conjugation deponent (e.g. "hortari")
+                const stem = inf.slice(0, -3);
+                return [stem + 'or', stem + 'aris', stem + 'atur', stem + 'amur', stem + 'amini', stem + 'antur'];
+            }
+            if (inf.endsWith('eri')) { // 2nd conjugation deponent (e.g. "vereri")
+                const stem = inf.slice(0, -3);
+                return [stem + 'eor', stem + 'eris', stem + 'etur', stem + 'emur', stem + 'emini', stem + 'entur'];
+            }
+            if (inf.endsWith('ire')) { // 4th conjugation
+                const stem = inf.slice(0, -3);
+                return [stem + 'ior', stem + 'iris', stem + 'itur', stem + 'imur', stem + 'imini', stem + 'iuntur'];
+            }
+            if (inf.endsWith('ere')) {
+                const stem = inf.slice(0, -3);
+                // 2nd and 3rd conjugation both end "-ere" without macrons, but
+                // inflect differently. The 1st principal part reliably tells
+                // them apart: 2nd conj is "-eo" (timeo/video/habeo), 3rd is a
+                // consonant + "-o" (mitto/dico/duco).
+                if (/eo$/i.test(parts[0])) {
+                    return [stem + 'eor', stem + 'eris', stem + 'etur', stem + 'emur', stem + 'emini', stem + 'entur'];
+                }
+                return [stem + 'or', stem + 'eris', stem + 'itur', stem + 'imur', stem + 'imini', stem + 'untur'];
+            }
+            // Fallback: treat the first part as an already-inflected stem
+            const stem = parts[0].replace(/o$/, '');
+            return [stem + 'or', stem + 'ris', stem + 'tur', stem + 'mur', stem + 'mini', stem + 'ntur'];
         }
 
         // Shared helper for every AI call in the app. Both question generation
@@ -1159,7 +1225,20 @@ ${rawText.substring(0, 6000)}
 
         async function generateQuestions(type, count) {
             const vocab = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
-            if (vocab.length === 0) vocab.push({latin:'puella',english:'girl'}, {latin:'bonus',english:'good'});
+            if (vocab.length === 0) vocab.push({latin:'puella',english:'girl',pos:'noun'}, {latin:'bonus',english:'good',pos:'noun'});
+
+            // Build a clean, explicitly POS-labeled vocab list for the AI, instead
+            // of dumping the raw corpus text — the raw text mixes nouns, verbs,
+            // and adjectives with no labels, which is exactly what let a verb's
+            // principal parts get used as if it were a noun.
+            function buildVocabSummary() {
+                const nouns = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === 'noun').slice(0, 40);
+                const verbs = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === 'verb').slice(0, 40);
+                let out = '';
+                if (nouns.length) out += `Nouns/adjectives: ${nouns.map(v => `${v.latin} (${v.english})`).join('; ')}\n`;
+                if (verbs.length) out += `Verbs (principal parts given — inflect/conjugate as needed, don't paste the dictionary form verbatim): ${verbs.map(v => `${v.latin} (${v.english})`).join('; ')}`;
+                return out;
+            }
             
             if (state.settings.apiKey && state.settings.apiUrl && type !== 'vocab' && type !== 'declining' && type !== 'conjugation') {
                 try {
@@ -1177,7 +1256,8 @@ ${rawText.substring(0, 6000)}
                             ? '\nEach question should be a short, simple phrase or single short clause — not a long multi-clause sentence.'
                             : '';
                     const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}
-Vocabulary/style reference: ${state.materials.rawText.substring(0, 800)}${grammarContext}${styleContext}
+Vocabulary is labeled by part of speech below — use nouns/adjectives only where a noun/adjective belongs (subject, object, etc.), and verbs only as the sentence's actual verb, correctly conjugated/inflected for the person, tense, and mood the sentence needs (never paste a verb's raw principal-parts listing into the sentence as if it were a word). Every generated sentence must be grammatically valid Latin.
+${buildVocabSummary()}${grammarContext}${styleContext}
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"..."}]}`;
                     const parsed = await callAI(prompt, true);
                     if (parsed && parsed.questions && parsed.questions.length > 0) return parsed.questions;
@@ -1186,9 +1266,24 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
 
             const questions = [];
             const dir = state.settings.vocabDirection;
-            
+
+            // Different question types need different parts of speech — asking
+            // someone to "conjugate" a noun, or plugging a verb's principal
+            // parts into a sentence's subject slot, produces nonsense. Pick
+            // from the right pool per type instead of any random vocab word.
+            function pickVocab(pos) {
+                const pool = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === pos);
+                const source = pool.length > 0 ? pool : vocab;
+                return source[Math.floor(Math.random() * source.length)];
+            }
+            const VERB_TYPES = ['conjugation', 'principalParts', 'moodTenseVoice'];
+            const NOUN_TYPES = ['declining', 'latToEng', 'engToLat', 'latSentence', 'engSentence', 'genderCase'];
+
             for (let i = 0; i < count; i++) {
-                const v = vocab[Math.floor(Math.random() * vocab.length)];
+                let v;
+                if (VERB_TYPES.includes(type)) v = pickVocab('verb');
+                else if (NOUN_TYPES.includes(type)) v = pickVocab('noun');
+                else v = vocab[Math.floor(Math.random() * vocab.length)];
                 let q = { type };
                 
                 switch(type) {
@@ -1208,7 +1303,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.target = `${v.latin} in urbe habitat`;
                         break;
                     case 'latSentence': {
-                        const v2 = vocab[Math.floor(Math.random() * vocab.length)];
+                        const v2 = pickVocab('noun');
                         const bank = [
                             { lat: `${v.latin}, qui in urbe habitabat, ${v2.latin} vidit.`, eng: `The ${v.english}, who was living in the city, saw the ${v2.english}.` },
                             { lat: `Cum ${v.latin} advenisset, cives laeti erant.`, eng: `When the ${v.english} had arrived, the citizens were happy.` },
@@ -1222,7 +1317,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         break;
                     }
                     case 'engSentence': {
-                        const v2 = vocab[Math.floor(Math.random() * vocab.length)];
+                        const v2 = pickVocab('noun');
                         const bank = [
                             { eng: `The ${v.english}, having been warned by the ${v2.english}, did not delay.`, lat: `${v.latin}, a ${v2.latin} monitus, non cunctatus est` },
                             { eng: `Although the ${v.english} was brave, he feared the ${v2.english}.`, lat: `quamquam ${v.latin} fortis erat, ${v2.latin} timuit` },
@@ -1236,7 +1331,6 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         break;
                     }
                     case 'declining':
-                        const stem = v.latin.replace(/(a|us|um)$/,'');
                         const forms = getDeclension(v.latin);
                         q.prompt = `Decline: ${v.latin}`;
                         q.target = `Nom. ${forms[0]}, Voc. ${forms[1]}, Acc. ${forms[2]}, Gen. ${forms[3]}, Dat. ${forms[4]}, Abl. ${forms[5]}`;
@@ -1250,12 +1344,16 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.prompt = `What is the gender and case of "${v.latin}"?`;
                         q.target = `Masculine / Feminine / Neuter (context dependent)`;
                         break;
-                    case 'principalParts':
-                        // Generate with -us PPP
-                        const base = v.latin.replace(/(o|or)$/,'');
-                        q.prompt = `Give principal parts for: ${v.latin}`;
-                        q.target = `${v.latin}, ${base}re, ${base}vi, ${base}tus`;
+                    case 'principalParts': {
+                        // Vocab already stores full principal parts as v.latin
+                        // (e.g. "amo, amare, amavi, amatum") — quiz on just the
+                        // first form, and the correct answer is simply what's
+                        // already stored, not a regex-guessed reconstruction.
+                        const firstForm = v.latin.split(',')[0].trim();
+                        q.prompt = `Give principal parts for: ${firstForm}`;
+                        q.target = v.latin;
                         break;
+                    }
                     case 'moodTenseVoice':
                         q.prompt = `Identify mood, tense, and voice: "${v.latin}"`;
                         q.target = `Indicative, Present, Active (example)`;
