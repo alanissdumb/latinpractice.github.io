@@ -114,11 +114,13 @@
                 vocabList: [],
                 images: [],
                 grammarNotes: '',
-                styleExamples: ''
+                styleExamples: '',
+                forceSwap: false
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
-            dailyLauncher: { active: false, completed: [], currentType: null, enabledTypes: [] }
+            dailyLauncher: { active: false, completed: [], currentType: null, enabledTypes: [], generating: false },
+            dailyCache: { date: null, questionsByType: {} }
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -134,6 +136,7 @@
                     if (parsed.materials) state.materials = { ...DEFAULT_STATE.materials, ...parsed.materials };
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
                     if (parsed.dailyLauncher) state.dailyLauncher = { ...DEFAULT_STATE.dailyLauncher, ...parsed.dailyLauncher };
+                    if (parsed.dailyCache) state.dailyCache = { ...DEFAULT_STATE.dailyCache, ...parsed.dailyCache };
                 }
             } catch(e) {}
             parseVocab();
@@ -239,10 +242,34 @@
         // Latin abbreviation letters like the "-a" in "fessus, -a, -um"), and
         // for single-word glosses with no stopword at all, common English
         // derivational suffixes that essentially never end a Latin headword.
+        // Plain single-word nouns like "eye"/"oculus" or "slave"/"servus" have
+        // no stopword or suffix to catch — so this adds a direct dictionary
+        // check against common English glosses that show up constantly in
+        // beginner/intermediate Latin vocab lists. Not exhaustive (no list of
+        // English words can be), but covers the common case.
+        const COMMON_ENGLISH_WORDS = new Set(['eye','ear','hand','foot','feet','head','king','queen',
+            'slave','master','servant','girl','boy','man','woman','child','children','dog','horse',
+            'war','peace','love','fear','hope','gift','sword','wall','walls','camp','army','battle',
+            'victory','enemy','friend','city','ship','road','gate','wound','blood','death','life',
+            'god','goddess','temple','priest','sister','brother','father','mother','son','daughter',
+            'home','house','field','forest','wood','mountain','river','sea','island','letter','book',
+            'word','name','day','night','year','month','hour','time','money','gold','silver','iron',
+            'fire','water','wind','storm','cloud','sun','moon','star','light','dark','tree','bird',
+            'fish','sheep','dinner','guest','wine','food','bread','table','chair','door','roof',
+            'chariot','spear','shield','soldier','general','senator','consul','citizen','stranger',
+            'guard','prisoner','captive','wolf','lion','deer','mouse','apple','wing','arm','leg',
+            'mouth','nose','heart','skin','bone','milk','honey','salt','bridge','tower','statue',
+            'altar','garden','farm','farmer','sailor','ruler','leader','teacher','student','pupil',
+            'doctor','judge','thief','liar','coward','hero','poet','actor','singer','hunter',
+            'merchant','trader','beggar','poor','rich','wise','foolish','brave','cowardly','strong',
+            'weak','tall','short','small','big','huge','tiny','old','young','new','good','bad',
+            'kind','cruel','gentle','harsh','quick','slow','easy','hard']);
+
         function looksEnglish(s) {
             const t = s.trim();
             if (/\b(to|the|of|is|was|were|be|been|and|who|that|with|not|his|her)\b/i.test(t)) return true;
             if (!t.includes(',') && /(ly|ing|ed|tion|ness|ful|less|ment|able|ible|ous|ive|man|woman)$/i.test(t)) return true;
+            if (!t.includes(',') && !t.includes(' ') && COMMON_ENGLISH_WORDS.has(t.toLowerCase())) return true;
             return false;
         }
 
@@ -258,7 +285,9 @@
                 // onto a word (e.g. "neco 1" from a superscript reference marker).
                 latin = latin.replace(/\s+\d{1,2}$/, '').trim();
                 english = english.replace(/\s+\d{1,2}$/, '').trim();
-                if (looksEnglish(latin) && !looksEnglish(english)) {
+                if (state.materials.forceSwap) {
+                    [latin, english] = [english, latin];
+                } else if (looksEnglish(latin) && !looksEnglish(english)) {
                     [latin, english] = [english, latin];
                 }
                 if (latin && english) {
@@ -386,6 +415,15 @@
             const completed = state.dailyLauncher.completed;
             const allDone = enabled.length > 0 && enabled.every(e => completed.includes(e));
             const remaining = enabled.filter(e => !completed.includes(e));
+
+            if (state.dailyLauncher.generating) {
+                return `
+                <div class="animate-fade-in max-w-lg mx-auto text-center py-24">
+                    <div class="w-16 h-16 border-4 border-sage-200 border-t-sage-600 rounded-full animate-spin mx-auto mb-6"></div>
+                    <h2 class="text-xl font-classical font-bold text-stone-800 mb-2">Preparing today's mix...</h2>
+                    <p class="text-stone-500 font-serif italic text-sm">Generating each category once so it's ready for the rest of the day.</p>
+                </div>`;
+            }
             
             if (allDone) {
                 const correct = state.dailyLauncher.results ? state.dailyLauncher.results.filter(r => r.correct).length : 0;
@@ -535,7 +573,10 @@
                 </div>
 
                 <div class="bg-white rounded-3xl p-8 sm:p-12 shadow-xl border border-stone-100 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden">
-                    <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
+                    <div class="flex items-center gap-2">
+                        <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
+                        ${q.source === 'fallback' ? '<span class="text-[10px] text-stone-400 uppercase tracking-widest" title="No AI configured, or the AI call failed — this is a fixed offline template, not freshly generated.">offline template</span>' : (q.source === 'ai' ? '<span class="text-[10px] text-stone-300 uppercase tracking-widest">AI-generated</span>' : '')}
+                    </div>
 
                     <h2 class="text-3xl sm:text-4xl font-classical font-bold text-stone-900 leading-snug">${q.prompt}</h2>
 
@@ -617,6 +658,11 @@
                             </button>
                         </div>
                         <p class="text-[11px] text-stone-400 mt-2">"Sort with AI" separates real vocab from grammar rules/tables mixed into pasted text — vocab stays here, grammar moves to the Grammar Notes box below. Replaces this box's content with just what it finds, so review after running it. Needs an API key set in Settings.</p>
+                        <label class="flex items-center gap-2 mt-3 text-xs text-stone-600 cursor-pointer">
+                            <input type="checkbox" id="forceSwapCheck" ${state.materials.forceSwap ? 'checked' : ''} onchange="toggleForceSwap(this.checked)" class="rounded border-stone-300">
+                            My list below is written English - Latin (not Latin - English) — swap every line
+                        </label>
+                        <p class="text-[11px] text-stone-400">Automatic detection catches common patterns, but a plain word pair like "eye - oculus" has nothing to distinguish it — if your whole list is consistently written the reversed way, check this instead of relying on detection.</p>
                     </div>
 
                     <div class="space-y-6">
@@ -759,6 +805,8 @@
                                 </div>
                             </div>
                             <p class="text-[11px] text-stone-400">AI reads your Input Corpus (vocab) and Grammar Notes to generate questions in your teacher's style and grammar focus. Uploaded images are stored for your own reference but aren't sent to the AI yet.</p>
+                            <button onclick="testConnection()" id="testConnBtn" class="text-xs font-bold text-sage-700 border border-sage-300 rounded-lg px-3 py-1.5 hover:bg-sage-50 transition">Test Connection</button>
+                            <div id="testConnResult" class="text-xs"></div>
                         </div>
                     </div>
 
@@ -822,7 +870,11 @@
 
         // ==================== DAILY LAUNCHER LOGIC ====================
 
-        function startDailyLauncher() {
+        function todayKey() {
+            return new Date().toDateString();
+        }
+
+        async function startDailyLauncher() {
             const dm = state.settings.dailyMix;
             const enabled = Object.keys(dm).filter(k => k !== 'countPerType' && dm[k]);
             
@@ -830,15 +882,47 @@
                 alert('Enable at least one category in Settings > Daily Mix.');
                 return navigateTo('settings');
             }
-            
+
             state.dailyLauncher = {
                 active: true,
                 completed: [],
                 currentType: null,
                 enabledTypes: enabled,
-                results: []
+                results: [],
+                generating: false
             };
-            
+
+            // Same calendar day and every enabled type already generated?
+            // Reuse it — this is what avoids hitting the API again today.
+            const cacheValid = state.dailyCache.date === todayKey()
+                && enabled.every(t => state.dailyCache.questionsByType[t]);
+
+            if (!cacheValid) {
+                // New day (or newly-enabled category, or materials changed since
+                // last generation) — regenerate just the missing types.
+                state.dailyLauncher.generating = true;
+                saveState();
+                navigateTo('daily_launcher');
+
+                if (state.dailyCache.date !== todayKey()) {
+                    state.dailyCache = { date: todayKey(), questionsByType: {} };
+                }
+                for (const type of enabled) {
+                    if (state.dailyCache.questionsByType[type]) continue;
+                    try {
+                        state.dailyCache.questionsByType[type] = await generateQuestions(type, state.settings.dailyMix.countPerType);
+                    } catch(e) {
+                        console.warn('Daily mix generation failed for', type, e);
+                        state.dailyCache.questionsByType[type] = await generateQuestions(type, state.settings.dailyMix.countPerType);
+                    }
+                    // Small gap between calls so a multi-category daily mix
+                    // doesn't fire a burst of requests that trips a per-minute
+                    // rate limit on the free tier.
+                    await new Promise(r => setTimeout(r, 1200));
+                }
+                state.dailyLauncher.generating = false;
+            }
+
             saveState();
             navigateTo('daily_launcher');
         }
@@ -849,7 +933,10 @@
             state.quiz.index = 0;
             state.quiz.answered = false;
             state.quiz.results = [];
-            state.quiz.questions = await generateQuestions(type, state.settings.dailyMix.countPerType);
+            // Pull from today's pre-generated cache; only hit the API directly
+            // if something's missing from it (shouldn't normally happen).
+            state.quiz.questions = state.dailyCache.questionsByType[type]
+                || await generateQuestions(type, state.settings.dailyMix.countPerType);
             saveState();
             navigateTo('quiz');
         }
@@ -885,6 +972,11 @@
             render();
         }
 
+        function toggleForceSwap(checked) {
+            state.materials.forceSwap = checked;
+            saveMaterials();
+        }
+
         function saveMaterials() {
             state.materials.rawText = document.getElementById('rawInputArea').value;
             const gArea = document.getElementById('grammarInputArea');
@@ -892,6 +984,10 @@
             const eArea = document.getElementById('styleExamplesArea');
             if (eArea) state.materials.styleExamples = eArea.value;
             parseVocab();
+            // New/changed materials mean anything already cached for today no
+            // longer reflects them — clear it so the next daily mix (or next
+            // category opened) regenerates from the updated content.
+            state.dailyCache = { date: null, questionsByType: {} };
             saveState();
             render();
         }
@@ -1067,6 +1163,44 @@
             });
         }
 
+        async function testConnection() {
+            // Test with whatever's currently in the fields, even if not saved
+            // yet — so the user can check before committing to Save.
+            const key = document.getElementById('cfg_key').value;
+            const url = document.getElementById('cfg_url').value;
+            const model = document.getElementById('cfg_model').value;
+            const btn = document.getElementById('testConnBtn');
+            const resultEl = document.getElementById('testConnResult');
+            if (!key || !url) {
+                resultEl.innerHTML = '<span class="text-terracotta-600">Enter an API key and URL first.</span>';
+                return;
+            }
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = 'Testing...';
+            resultEl.innerHTML = '';
+            try {
+                const res = await fetch(`${url}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+                    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with just the word OK.' }], max_tokens: 5 })
+                });
+                if (res.ok) {
+                    resultEl.innerHTML = '<span class="text-sage-700"><i class="fa-solid fa-check-circle mr-1"></i>Connected — this model and key are working.</span>';
+                } else if (res.status === 429) {
+                    resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Rate limited (429) — the key/URL work, but you\'ve hit the provider\'s request limit for now. Try again shortly.</span>';
+                } else if (res.status === 401 || res.status === 403) {
+                    resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Auth error (' + res.status + ') — check the API key is correct and active.</span>';
+                } else {
+                    resultEl.innerHTML = `<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Request failed (${res.status}) — check the API URL and model name.</span>`;
+                }
+            } catch(e) {
+                resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Network error — check the API URL is reachable.</span>';
+            }
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+
         function saveSettings() {
             state.settings.apiKey = document.getElementById('cfg_key').value;
             state.settings.apiUrl = document.getElementById('cfg_url').value;
@@ -1224,6 +1358,7 @@
                 if (sorted.vocab.length === 0 && !sorted.grammar.trim() && !(sorted.examples && sorted.examples.trim())) {
                     textareaEl.value += `\n\n--- ${sourceLabel} (AI found nothing usable, added raw) ---\n${rawText}`;
                 }
+                state.dailyCache = { date: null, questionsByType: {} };
                 saveState();
             } catch(e) {
                 console.error(e);
@@ -1294,10 +1429,20 @@ ${rawText.substring(0, 6000)}
                             : '';
                     const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}
 Vocabulary is labeled by part of speech below — use nouns/adjectives only where a noun/adjective belongs (subject, object, etc.), and verbs only as the sentence's actual verb, correctly conjugated/inflected for the person, tense, and mood the sentence needs (never paste a verb's raw principal-parts listing into the sentence as if it were a word). Every generated sentence must be grammatically valid Latin.
+Vary the vocabulary and sentence pattern across the ${count} questions — don't reuse the same word pair or sentence structure repeatedly; each question should feel distinct from the others.
 ${buildVocabSummary()}${grammarContext}${styleContext}
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"..."}]}`;
                     const parsed = await callAI(prompt, true);
-                    if (parsed && parsed.questions && parsed.questions.length > 0) return parsed.questions;
+                    if (parsed && Array.isArray(parsed.questions)) {
+                        // Drop anything malformed rather than trusting the
+                        // response wholesale — a missing prompt/target would
+                        // otherwise surface as a broken, unanswerable question.
+                        const valid = parsed.questions.filter(qq =>
+                            qq && typeof qq.prompt === 'string' && qq.prompt.trim() &&
+                            typeof qq.target === 'string' && qq.target.trim()
+                        ).map(qq => ({ ...qq, source: 'ai' }));
+                        if (valid.length > 0) return valid;
+                    }
                 } catch(e) { console.warn('AI gen failed, using local', e); }
             }
 
@@ -1314,7 +1459,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                 return source[Math.floor(Math.random() * source.length)];
             }
             const VERB_TYPES = ['conjugation', 'principalParts', 'moodTenseVoice'];
-            const NOUN_TYPES = ['declining', 'latToEng', 'engToLat', 'latSentence', 'engSentence', 'genderCase'];
+            const NOUN_TYPES = ['declining', 'latToEng', 'engToLat', 'latSentence', 'engSentence', 'genderCase', 'unseen'];
 
             for (let i = 0; i < count; i++) {
                 let v;
@@ -1377,10 +1522,25 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.prompt = `Conjugate (passive present): ${v.latin}`;
                         q.target = `1st: ${conjForms[0]}, 2nd: ${conjForms[1]}, 3rd: ${conjForms[2]}, 1st pl: ${conjForms[3]}, 2nd pl: ${conjForms[4]}, 3rd pl: ${conjForms[5]}`;
                         break;
-                    case 'genderCase':
-                        q.prompt = `What is the gender and case of "${v.latin}"?`;
-                        q.target = `Masculine / Feminine / Neuter (context dependent)`;
+                    case 'genderCase': {
+                        // Deriving number/gender/case for an arbitrary noun form
+                        // needs real morphology, not a guess — these are real
+                        // forms (from your own test) with correct answers,
+                        // rotating through so it's not always the same one.
+                        const bank = [
+                            { form: 'navem', ans: 'Singular, Feminine, Accusative' },
+                            { form: 'proelii', ans: 'Singular, Neuter, Genitive' },
+                            { form: 'fluminum', ans: 'Plural, Neuter, Genitive' },
+                            { form: 'senatui', ans: 'Singular, Masculine, Dative' },
+                            { form: 'nunti', ans: 'Singular, Masculine, Genitive' },
+                            { form: 'tempestatis', ans: 'Singular, Feminine, Genitive' },
+                            { form: 'nautas', ans: 'Plural, Masculine, Accusative' }
+                        ];
+                        const pick = bank[i % bank.length];
+                        q.prompt = `What is the number, gender, and case of "${pick.form}"?`;
+                        q.target = pick.ans;
                         break;
+                    }
                     case 'principalParts': {
                         // Vocab already stores full principal parts as v.latin
                         // (e.g. "amo, amare, amavi, amatum") — quiz on just the
@@ -1391,15 +1551,32 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.target = v.latin;
                         break;
                     }
-                    case 'moodTenseVoice':
-                        q.prompt = `Identify mood, tense, and voice: "${v.latin}"`;
-                        q.target = `Indicative, Present, Active (example)`;
+                    case 'moodTenseVoice': {
+                        const bank = [
+                            { form: 'ambulabit', ans: 'Indicative, Future, Active' },
+                            { form: 'laudata est', ans: 'Indicative, Perfect, Passive' },
+                            { form: 'regeret', ans: 'Subjunctive, Imperfect, Active' },
+                            { form: 'abstulit', ans: 'Indicative, Perfect, Active' },
+                            { form: 'fac', ans: 'Imperative, Present, Active' },
+                            { form: 'monuissem', ans: 'Subjunctive, Pluperfect, Active' },
+                            { form: 'docebamur', ans: 'Indicative, Imperfect, Passive' },
+                            { form: 'absit', ans: 'Subjunctive, Present, Active' },
+                            { form: 'missum erat', ans: 'Indicative, Pluperfect, Passive' },
+                            { form: 'audientur', ans: 'Indicative, Future, Passive' },
+                            { form: 'portate', ans: 'Imperative, Present, Active' },
+                            { form: 'ablatum erit', ans: 'Indicative, Future Perfect, Passive' }
+                        ];
+                        const pick = bank[i % bank.length];
+                        q.prompt = `Identify mood, tense, and voice: "${pick.form}"`;
+                        q.target = pick.ans;
                         break;
+                    }
                     case 'unseen':
                         q.prompt = `Read: ${v.latin} ad urbem ambulavit. Quid fecit?`;
                         q.target = `He/she walked to the city.`;
                         break;
                 }
+                q.source = 'fallback';
                 questions.push(q);
             }
             return questions;
@@ -1469,21 +1646,46 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             let isCorrect = false;
             const cleanAns = userAns.toLowerCase().replace(/[.,!?;:]/g,'').trim();
             const cleanTgt = q.target.toLowerCase().replace(/[.,!?;:]/g,'').trim();
-            
-            // If blank, treat as "don't know"
+
+            // Offline fallback only — exact match, or for vocab, an exact match
+            // against any one synonym in a comma/semicolon-separated gloss.
+            // (Previously this accepted ANY 3+ letter substring of the target,
+            // e.g. "kin" would match "king" — too lenient to trust.)
+            function heuristicCorrect() {
+                if (isVocab) {
+                    const parts = cleanTgt.split(/[,;\/]| or /).map(s => s.trim()).filter(Boolean);
+                    return parts.includes(cleanAns);
+                }
+                return cleanAns === cleanTgt;
+            }
+
             if (userAns === '') {
                 isCorrect = false;
-            } else if (isVocab) {
-                isCorrect = cleanAns === cleanTgt || cleanTgt.includes(cleanAns) && cleanAns.length > 2;
-            } else {
-                isCorrect = cleanAns === cleanTgt || (cleanTgt.length > 10 && cleanAns.includes(cleanTgt.split(' ').slice(0,3).join(' ')));
-            }
-            
-            if (state.settings.apiKey && state.settings.apiUrl && !isCorrect && userAns !== '') {
+            } else if (state.settings.apiKey && state.settings.apiUrl) {
+                // Let the AI make the actual correctness call, not just add
+                // commentary after a rigid string-match — translation questions
+                // in particular have many valid phrasings that exact-match would
+                // wrongly reject.
                 try {
-                    const prompt = `Student answered: "${userAns}"\nCorrect answer: "${q.target}"\nQuestion: "${q.prompt}"\nGive 1-2 sentence teacher feedback on what was wrong (tense, agreement, word order, etc). Be concise.`;
-                    feedback = await callAI(prompt, false);
-                } catch(e) {}
+                    const prompt = `You are marking a Latin student's answer like a teacher.
+Question: "${q.prompt}"
+Model/expected answer: "${q.target}"
+Student's answer: "${userAns}"
+Judge whether the student's answer is an acceptable answer — accept valid alternative phrasing, synonyms, and word order for translations; for vocab, accept any valid synonym. Don't require an exact word-for-word match to the model answer.
+Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher feedback, concise — if correct, briefly affirm; if wrong, explain specifically what was wrong (tense, agreement, word order, vocabulary, etc.)"}`;
+                    const result = await callAI(prompt, true);
+                    if (result && typeof result.correct === 'boolean') {
+                        isCorrect = result.correct;
+                        feedback = typeof result.feedback === 'string' ? result.feedback : '';
+                    } else {
+                        isCorrect = heuristicCorrect();
+                    }
+                } catch(e) {
+                    isCorrect = heuristicCorrect();
+                    feedback = "(AI marking unavailable right now — marked by exact match instead.)";
+                }
+            } else {
+                isCorrect = heuristicCorrect();
             }
             
             const fb = document.getElementById('feedbackBox');
