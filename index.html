@@ -115,7 +115,8 @@
                 images: [],
                 grammarNotes: '',
                 styleExamples: '',
-                forceSwap: false
+                forceSwap: false,
+                enrichment: {}
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
@@ -213,12 +214,23 @@
         // principal parts into a noun slot (or vice versa). Not linguistically
         // perfect, but "to " in the gloss and comma-count in the Latin form are
         // reliable enough signals for how vocab lists are normally written.
+        // Anki decks commonly store verbs as "present infinitive conjugationNumber"
+        // with no principal parts at all, e.g. "mitto mittere 3" or "capio capere 3i"
+        // (io = 3rd-io). Recognizing this explicitly is far more reliable than
+        // guessing conjugation from spelling, since the number IS the conjugation.
+        function parseAnkiVerbShorthand(latin) {
+            const m = latin.trim().match(/^(\S+)\s+(\S+)\s+([1-4])(i(?:o)?)?$/i);
+            if (!m) return null;
+            return { present: m[1], infinitive: m[2], conj: m[3], isIo: !!m[4] };
+        }
+
         function classifyPos(latin, english) {
             const rawParts = latin.split(',').map(s => s.trim());
             // Adjectives are conventionally abbreviated like "fessus, -a, -um"
             // (a 3-part comma list) — that's endings, not principal parts, so
             // it must never be classified as a verb regardless of part count.
             if (rawParts.length >= 2 && rawParts.slice(1).some(p => p.startsWith('-'))) return 'noun';
+            if (parseAnkiVerbShorthand(latin)) return 'verb';
             if (/^to\s/i.test(english.trim()) || rawParts.length >= 3) return 'verb';
             return 'noun'; // covers nouns and adjectives — both fine to plug into a nominal slot
         }
@@ -282,8 +294,10 @@
                 if (!split) return;
                 let [latin, english] = split;
                 // Strip trailing footnote-style digits some PDF extractions glue
-                // onto a word (e.g. "neco 1" from a superscript reference marker).
-                latin = latin.replace(/\s+\d{1,2}$/, '').trim();
+                // onto a word (e.g. "neco 1" from a superscript reference marker)
+                // — but NOT when it's actually the Anki verb-shorthand conjugation
+                // number (e.g. "mitto mittere 3"), which needs to stay intact.
+                if (!parseAnkiVerbShorthand(latin)) latin = latin.replace(/\s+\d{1,2}$/, '').trim();
                 english = english.replace(/\s+\d{1,2}$/, '').trim();
                 if (state.materials.forceSwap) {
                     [latin, english] = [english, latin];
@@ -291,7 +305,17 @@
                     [latin, english] = [english, latin];
                 }
                 if (latin && english) {
-                    state.materials.vocabList.push({ latin, english, pos: classifyPos(latin, english), id: Date.now() + Math.random() });
+                    const entry = { latin, english, pos: classifyPos(latin, english), id: Date.now() + Math.random() };
+                    // Apply any prior AI enrichment (semantic category, word
+                    // associations) for this exact headword, so it survives
+                    // vocabList being rebuilt from scratch on every parse.
+                    const enrich = state.materials.enrichment[latin];
+                    if (enrich) {
+                        if (enrich.pos) entry.pos = enrich.pos;
+                        if (enrich.semanticCategory) entry.semanticCategory = enrich.semanticCategory;
+                        if (Array.isArray(enrich.collocates)) entry.collocates = enrich.collocates;
+                    }
+                    state.materials.vocabList.push(entry);
                 }
             });
             if (state.wordBank.length === 0 && state.materials.vocabList.length > 0) {
@@ -677,12 +701,19 @@
                             <div class="max-h-[240px] overflow-y-auto custom-scrollbar border border-stone-100 rounded-xl p-2 bg-stone-50">
                                 <ul class="divide-y divide-stone-200 text-sm font-serif">
                                     ${state.materials.vocabList.map(v => `
-                                        <li class="py-2 px-2 flex justify-between">
+                                        <li class="py-2 px-2 flex justify-between items-center">
                                             <strong class="text-stone-900">${v.latin}</strong>
                                             <span class="text-stone-600">${v.english}</span>
+                                            ${v.semanticCategory ? `<span class="text-[9px] text-sage-600 bg-sage-50 border border-sage-200 rounded-full px-2 py-0.5 ml-2">${v.semanticCategory}</span>` : ''}
                                         </li>
                                     `).join('')}
                                 </ul>
+                            </div>
+                            <div class="mt-3 pt-3 border-t border-stone-100">
+                                <button id="enrichBtn" onclick="enrichVocabWithAI()" class="w-full bg-white hover:bg-stone-50 text-sage-700 font-bold py-2.5 rounded-xl shadow-sm border border-sage-300 transition text-sm">
+                                    <i class="fa-solid fa-diagram-project mr-1"></i> Index Vocabulary with AI
+                                </button>
+                                <p id="enrichStatus" class="text-[11px] text-stone-400 mt-2">${Object.keys(state.materials.enrichment).length > 0 ? `${Object.keys(state.materials.enrichment).length} words indexed so far.` : 'One-time pass: tags each word (person/place/object/etc.) and links related words (e.g. "conicio" ↔ "saxum"), so offline-generated sentences pick sensible pairings instead of random ones. Costs one small API call per ~25 words, not per question — re-run after adding a lot of new vocab.'}</p>
                             </div>
                         </div>
                         
@@ -1295,6 +1326,19 @@
         }
 
         function getConjugation(latinEntry) {
+            // If this is "present infinitive conjNumber" shorthand, the number
+            // tells us the conjugation directly — no need to guess from spelling.
+            const shorthand = parseAnkiVerbShorthand(latinEntry);
+            if (shorthand) {
+                const stem = shorthand.infinitive.slice(0, -3); // strip -are/-ere/-ire
+                if (shorthand.conj === '1') return [stem + 'or', stem + 'aris', stem + 'atur', stem + 'amur', stem + 'amini', stem + 'antur'];
+                if (shorthand.conj === '2') return [stem + 'eor', stem + 'eris', stem + 'etur', stem + 'emur', stem + 'emini', stem + 'entur'];
+                if (shorthand.conj === '4') return [stem + 'ior', stem + 'iris', stem + 'itur', stem + 'imur', stem + 'imini', stem + 'iuntur'];
+                // conj 3 (including 3rd-io) — endings are the same passive
+                // present pattern either way
+                return [stem + 'or', stem + 'eris', stem + 'itur', stem + 'imur', stem + 'imini', stem + 'untur'];
+            }
+
             // Vocab is often given as full principal parts (e.g. "amo, amare,
             // amavi, amatum") — the infinitive (2nd part) reliably identifies
             // the conjugation class; the 1st person alone doesn't.
@@ -1394,6 +1438,70 @@
         // -/=/: ) turns grammar rules into garbage "vocab" pairs. This asks the
         // AI to separate genuine vocab items from everything else, so grammar
         // content lands in its own notes field instead of the quiz pool.
+        // One-time "indexing" pass: asks the AI to tag each word's semantic
+        // category (for nouns/adjectives) and suggest which OTHER words in the
+        // list it naturally goes with (e.g. "conicio" pairs with "saxum"/"telum";
+        // "mitto" pairs with "epistula"/"nuntius"). This runs once (not per
+        // question), and the result is cached in state.materials.enrichment —
+        // so offline fallback sentences can pick semantically sensible word
+        // combinations instead of a random noun in every slot.
+        async function enrichVocabWithAI() {
+            if (!state.settings.apiKey || !state.settings.apiUrl) {
+                alert('Add an API key in Settings first.');
+                return;
+            }
+            const words = state.materials.vocabList;
+            if (words.length === 0) {
+                alert('No vocab to index yet — save some in the Input Corpus first.');
+                return;
+            }
+            const btn = document.getElementById('enrichBtn');
+            const statusEl = document.getElementById('enrichStatus');
+            btn.disabled = true;
+            const CHUNK = 25;
+            const chunks = [];
+            for (let i = 0; i < words.length; i += CHUNK) chunks.push(words.slice(i, i + CHUNK));
+
+            let done = 0;
+            for (const chunk of chunks) {
+                statusEl.textContent = `Indexing ${done}/${words.length} words...`;
+                const wordList = chunk.map((w, idx) => `${idx + 1}. ${w.latin} (${w.english})`).join('\n');
+                const prompt = `You are indexing a Latin vocabulary list for a study app that generates practice sentences offline (without AI). For each word below, provide:
+- "pos": "noun", "verb", or "adjective"
+- "semanticCategory" (nouns/adjectives only, omit for verbs): one of "person", "place", "object", "animal", "abstract", "nature", "building", "time", "food", "other"
+- "collocates": 2-4 OTHER words from THIS SAME LIST that commonly go together with this word in a real sentence — for a verb, nouns from the list that make sense as its subject/object (e.g. "conicio" (I throw) → nouns like "saxum" or "telum" if present in the list; "mitto" (I send) → "epistula" or "nuntius" if present); for a noun, verbs from the list that plausibly act on/with it. Only reference words that actually appear in the list below — if nothing in the list fits well, return an empty array rather than forcing an unrelated word.
+
+Word list:
+${wordList}
+
+Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "...", "semanticCategory": "...", "collocates": ["...", "..."]}]}`;
+                try {
+                    const result = await callAI(prompt, true);
+                    if (result && Array.isArray(result.words)) {
+                        result.words.forEach(w => {
+                            if (w && typeof w.latin === 'string') {
+                                state.materials.enrichment[w.latin] = {
+                                    pos: (w.pos === 'verb' || w.pos === 'noun' || w.pos === 'adjective') ? (w.pos === 'adjective' ? 'noun' : w.pos) : undefined,
+                                    semanticCategory: typeof w.semanticCategory === 'string' ? w.semanticCategory : undefined,
+                                    collocates: Array.isArray(w.collocates) ? w.collocates.filter(c => typeof c === 'string') : []
+                                };
+                            }
+                        });
+                    }
+                } catch(e) {
+                    console.warn('Enrichment chunk failed', e);
+                }
+                done += chunk.length;
+                saveState();
+                await new Promise(r => setTimeout(r, 1200)); // avoid a burst of calls
+            }
+            parseVocab();
+            saveState();
+            statusEl.textContent = `Indexed ${words.length} words.`;
+            btn.disabled = false;
+            render();
+        }
+
         async function sortMaterialWithAI(rawText, sourceLabel) {
             const prompt = `You are processing raw text extracted from a Latin study document (source: ${sourceLabel}), which may be a vocab list, a grammar sheet, or a past test/worksheet containing full example sentences with translations.
 
@@ -1485,11 +1593,69 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                 return source[Math.floor(Math.random() * source.length)];
             }
             const VERB_TYPES = ['conjugation', 'principalParts', 'moodTenseVoice'];
+            // Turns a stored "to send" style gloss into "sends" for use in a
+            // natural English sentence, with basic spelling rules covered.
+            function thirdPersonVerbForm(english) {
+                const base = english.replace(/^to\s+/i, '').trim().split(/[,;]/)[0].trim();
+                if (/[sxz]$|[cs]h$/i.test(base)) return base + 'es';
+                if (/[^aeiou]y$/i.test(base)) return base.slice(0, -1) + 'ies';
+                return base + 's';
+            }
+
             const NOUN_TYPES = ['declining', 'latToEng', 'engToLat', 'latSentence', 'engSentence', 'genderCase', 'unseen'];
+
+            // Active present 3rd-singular form — used for the collocate-based
+            // sentence pattern below. Deponents are skipped for this (their
+            // active-meaning 3sg is actually passive in form, e.g. "hortatur",
+            // which would need separate handling), kept simple by excluding them.
+            function getActivePresent3sg(latinEntry) {
+                const shorthand = parseAnkiVerbShorthand(latinEntry);
+                let inf, conj;
+                if (shorthand) { inf = shorthand.infinitive.toLowerCase(); conj = shorthand.conj; }
+                else {
+                    const parts = latinEntry.split(',').map(s => s.trim());
+                    inf = (parts.length >= 2 ? parts[1] : parts[0]).toLowerCase();
+                    if (inf.endsWith('are')) conj = '1';
+                    else if (inf.endsWith('ire')) conj = '4';
+                    else if (inf.endsWith('ere')) conj = /eo$/i.test(parts[0]) ? '2' : '3';
+                    else return null; // deponent (-ari/-eri) or unrecognized — skip
+                }
+                if (!inf.endsWith('are') && !inf.endsWith('ere') && !inf.endsWith('ire')) return null;
+                const stem = inf.slice(0, -3);
+                if (conj === '1') return stem + 'at';
+                if (conj === '2') return stem + 'et';
+                if (conj === '4') return stem + 'it';
+                return stem + 'it';
+            }
+
+            // Picks a verb that's been AI-indexed with real collocates, plus one
+            // of those collocate nouns actually present in the current vocab —
+            // e.g. "mitto" linked to "epistula" — so the sentence is a real,
+            // sensible pairing instead of two random words.
+            function pickVerbCollocatePair() {
+                const verbs = vocab.filter(vv => (vv.pos || classifyPos(vv.latin, vv.english)) === 'verb'
+                    && Array.isArray(vv.collocates) && vv.collocates.length > 0
+                    && getActivePresent3sg(vv.latin));
+                if (verbs.length === 0) return null;
+                const verb = verbs[Math.floor(Math.random() * verbs.length)];
+                const objCandidates = vocab.filter(n => verb.collocates.includes(n.latin));
+                if (objCandidates.length === 0) return null;
+                const obj = objCandidates[Math.floor(Math.random() * objCandidates.length)];
+                const subjPool = vocab.filter(n => (n.pos || classifyPos(n.latin, n.english)) === 'noun' && n.latin !== obj.latin);
+                const subj = subjPool.length > 0 ? subjPool[Math.floor(Math.random() * subjPool.length)] : { latin: 'puella', english: 'girl' };
+                return { verb, obj, subj };
+            }
+
 
             for (let i = 0; i < count; i++) {
                 let v;
-                if (VERB_TYPES.includes(type)) v = pickVocab('verb');
+                if (type === 'principalParts') {
+                    // Only quiz words that actually have principal parts to
+                    // give — the Anki-style "mitto mittere 3" shorthand has no
+                    // perfect/supine stored, so it can't be a fair question here.
+                    const withParts = vocab.filter(vv => (vv.pos || classifyPos(vv.latin, vv.english)) === 'verb' && !parseAnkiVerbShorthand(vv.latin) && vv.latin.split(',').length >= 3);
+                    v = withParts.length > 0 ? withParts[Math.floor(Math.random() * withParts.length)] : pickVocab('verb');
+                } else if (VERB_TYPES.includes(type)) v = pickVocab('verb');
                 else if (NOUN_TYPES.includes(type)) v = pickVocab('noun');
                 else v = vocab[Math.floor(Math.random() * vocab.length)];
                 let q = { type };
@@ -1511,6 +1677,18 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         q.target = `${v.latin} in urbe habitat`;
                         break;
                     case 'latSentence': {
+                        const pair = pickVerbCollocatePair();
+                        if (pair && Math.random() < 0.6) {
+                            const subjNom = pair.subj.latin.split(',')[0].trim();
+                            const objAcc = getDeclension(pair.obj.latin)[2];
+                            const verbForm = getActivePresent3sg(pair.verb.latin);
+                            const subjEn = pair.subj.english.split(/[,;]/)[0].trim();
+                            const objEn = pair.obj.english.split(/[,;]/)[0].trim();
+                            const verbEn = thirdPersonVerbForm(pair.verb.english);
+                            q.prompt = `${subjNom} ${objAcc} ${verbForm}.`;
+                            q.target = `The ${subjEn} ${verbEn} the ${objEn}.`;
+                            break;
+                        }
                         const v2 = pickVocab('noun');
                         const bank = [
                             { lat: `${v.latin}, qui in urbe habitabat, ${v2.latin} vidit.`, eng: `The ${v.english}, who was living in the city, saw the ${v2.english}.` },
@@ -1525,6 +1703,18 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         break;
                     }
                     case 'engSentence': {
+                        const pair = pickVerbCollocatePair();
+                        if (pair && Math.random() < 0.6) {
+                            const subjNom = pair.subj.latin.split(',')[0].trim();
+                            const objAcc = getDeclension(pair.obj.latin)[2];
+                            const verbForm = getActivePresent3sg(pair.verb.latin);
+                            const subjEn = pair.subj.english.split(/[,;]/)[0].trim();
+                            const objEn = pair.obj.english.split(/[,;]/)[0].trim();
+                            const verbEn = thirdPersonVerbForm(pair.verb.english);
+                            q.prompt = `The ${subjEn} ${verbEn} the ${objEn}.`;
+                            q.target = `${subjNom} ${objAcc} ${verbForm}`;
+                            break;
+                        }
                         const v2 = pickVocab('noun');
                         const bank = [
                             { eng: `The ${v.english}, having been warned by the ${v2.english}, did not delay.`, lat: `${v.latin}, a ${v2.latin} monitus, non cunctatus est` },
