@@ -1524,9 +1524,9 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
                 if (onProgress) onProgress(done, words.length);
                 const wordList = chunk.map((w, idx) => `${idx + 1}. ${w.latin} (${w.english})`).join('\n');
                 const prompt = `You are indexing a Latin vocabulary list for a study app that generates practice sentences offline (without AI). For each word below, provide:
-- "pos": "noun", "verb", or "adjective"
-- "semanticCategory" (nouns/adjectives only, omit for verbs): one of "person", "place", "object", "animal", "abstract", "nature", "building", "time", "food", "other"
-- "collocates": 2-4 OTHER words from THIS SAME LIST that commonly go together with this word in a real sentence — for a verb, nouns from the list that make sense as its subject/object (e.g. "conicio" (I throw) → nouns like "saxum" or "telum" if present in the list; "mitto" (I send) → "epistula" or "nuntius" if present); for a noun, verbs from the list that plausibly act on/with it. Only reference words that actually appear in the list below — if nothing in the list fits well, return an empty array rather than forcing an unrelated word.
+- "pos": "noun", "verb", or "adjective". An ADJECTIVE describes a quality of something (e.g. bonus "good", magnus "great", fortis "brave") — it does not itself name a person, place, or thing.
+- "semanticCategory": ONLY for true nouns that name a concrete or abstract THING — one of "person", "place", "object", "animal", "abstract", "nature", "building", "time", "food", "other". Leave this out entirely (do not guess) for verbs AND for adjectives — a quality word like "good" or "great" is not itself a person/place/object, so forcing a category onto it is wrong. Only assign a category when the word genuinely names a thing.
+- "collocates": 2-4 OTHER words from THIS SAME LIST that commonly go together with this word in a real sentence — for a verb, nouns from the list that make sense as its subject/object (e.g. "conicio" (I throw) → nouns like "saxum" or "telum" if present in the list; "mitto" (I send) → "epistula" or "nuntius" if present); for an adjective, nouns from the list it could plausibly describe; for a noun, verbs from the list that plausibly act on/with it. Only reference words that actually appear in the list below — if nothing in the list fits well, return an empty array rather than forcing an unrelated word.
 
 Word list:
 ${wordList}
@@ -1537,9 +1537,16 @@ Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "..
                     if (result && Array.isArray(result.words)) {
                         result.words.forEach(w => {
                             if (w && typeof w.latin === 'string') {
+                                const pos = (w.pos === 'verb' || w.pos === 'noun' || w.pos === 'adjective') ? (w.pos === 'adjective' ? 'noun' : w.pos) : undefined;
+                                // Safety net: a semanticCategory only makes sense
+                                // for a true noun. If the AI still assigned one
+                                // to something it also marked as an adjective,
+                                // drop the category rather than keep a wrong one
+                                // (this is exactly what happened with "bonus").
+                                const semanticCategory = (w.pos === 'noun' && typeof w.semanticCategory === 'string') ? w.semanticCategory : undefined;
                                 state.materials.enrichment[w.latin] = {
-                                    pos: (w.pos === 'verb' || w.pos === 'noun' || w.pos === 'adjective') ? (w.pos === 'adjective' ? 'noun' : w.pos) : undefined,
-                                    semanticCategory: typeof w.semanticCategory === 'string' ? w.semanticCategory : undefined,
+                                    pos,
+                                    semanticCategory,
                                     collocates: Array.isArray(w.collocates) ? w.collocates.filter(c => typeof c === 'string') : []
                                 };
                             }
