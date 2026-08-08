@@ -116,7 +116,8 @@
                 grammarNotes: '',
                 styleExamples: '',
                 forceSwap: false,
-                enrichment: {}
+                enrichment: {},
+                lastExtractedExamples: ''
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
@@ -631,6 +632,8 @@
 
                     <div id="feedbackBox" class="w-full hidden text-left bg-parchment-100 border border-stone-200 rounded-2xl p-6 mt-4 animate-fade-in"></div>
 
+                    <div id="askBox" class="w-full hidden text-left mt-3"></div>
+
                     <button id="submitBtn" onclick="evaluateAnswer()" class="w-full sm:w-auto px-10 py-4 bg-sage-600 hover:bg-sage-700 text-white font-bold rounded-xl shadow-lg transition text-lg mt-4">
                         Submit
                     </button>
@@ -740,7 +743,7 @@
 
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
                     <h3 class="font-classical font-bold text-lg mb-1">Style Examples (Past Tests)</h3>
-                    <p class="text-xs text-stone-500 font-serif italic mb-3">Paste real graded sentences from past tests (either direction) so generated Latin/English Sentences actually match your teacher's real style, sentence complexity, and vocabulary — not just generic phrases. Use "Sort with AI" above or a PDF upload to fill this in automatically, or paste directly here.</p>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Paste real graded sentences from past tests (either direction) so generated Latin/English Sentences actually match your teacher's real style, sentence complexity, and vocabulary — not just generic phrases. Use "Sort with AI" above or a PDF upload to fill this in automatically, or paste directly here. Saving also scans these sentences for any vocab not already in your Input Corpus and adds it automatically.</p>
                     <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.styleExamples}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
@@ -1031,6 +1034,60 @@
             saveMaterials();
         }
 
+        // Pulls vocabulary straight out of Style Examples sentence pairs (which
+        // already have both Latin and English, so no guessing needed) and adds
+        // any genuinely new words to the corpus. Skips re-running when the
+        // examples text hasn't changed since the last pass, so this doesn't
+        // burn API calls re-scanning unchanged content on every save.
+        async function extractVocabFromExamples() {
+            const examples = state.materials.styleExamples;
+            if (!examples || !examples.trim()) return;
+            if (!state.settings.apiKey || !state.settings.apiUrl) return;
+            if (state.materials.lastExtractedExamples === examples) return; // unchanged
+
+            const statusEl = document.getElementById('enrichStatus');
+            if (statusEl) statusEl.textContent = 'Scanning style examples for new vocab...';
+
+            const existingHeadwords = new Set(state.materials.vocabList.map(v => v.latin.split(',')[0].trim().toLowerCase()));
+            const prompt = `Below are Latin example sentences paired with their English translations. Identify the NOTEWORTHY vocabulary (nouns, verbs, adjectives, useful adverbs/prepositions) used in them — skip trivial words already assumed known (basic pronouns like is/ea/id, and/but conjunctions like et/sed, the relative qui/quae/quod).
+
+For each word, give its Latin DICTIONARY form in standard vocab-list convention (nouns: nominative + genitive, e.g. "miles, militis"; verbs: principal parts, e.g. "mitto, mittere, misi, missus"; adjectives: "bonus, -a, -um") and its English meaning, based on how it's used in these sentences — not just any dictionary sense.
+
+Sentences:
+${examples.substring(0, 4000)}
+
+Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
+            try {
+                const result = await callAI(prompt, true);
+                if (result && Array.isArray(result.vocab)) {
+                    const newLines = [];
+                    result.vocab.forEach(line => {
+                        if (typeof line !== 'string') return;
+                        const split = splitVocabLine(line);
+                        if (!split) return;
+                        const headword = split[0].split(',')[0].trim().toLowerCase();
+                        if (headword && !existingHeadwords.has(headword)) {
+                            existingHeadwords.add(headword);
+                            newLines.push(line);
+                        }
+                    });
+                    if (newLines.length > 0) {
+                        state.materials.rawText += `\n\n--- from Style Examples ---\n` + newLines.join('\n');
+                        const area = document.getElementById('rawInputArea');
+                        if (area) area.value = state.materials.rawText;
+                        parseVocab();
+                        if (statusEl) statusEl.textContent = `Added ${newLines.length} new word(s) from style examples.`;
+                    } else if (statusEl) {
+                        statusEl.textContent = 'No new vocab found in style examples.';
+                    }
+                }
+            } catch(e) {
+                console.warn('Vocab extraction from examples failed', e);
+            }
+            state.materials.lastExtractedExamples = examples;
+            saveState();
+        }
+
         function saveMaterials() {
             state.materials.rawText = document.getElementById('rawInputArea').value;
             const gArea = document.getElementById('grammarInputArea');
@@ -1044,6 +1101,12 @@
             state.dailyCache = { date: null, questionsByType: {} };
             saveState();
             render();
+            runAutoPipeline(); // fire-and-forget — extracts new vocab from examples, then indexes everything new
+        }
+
+        async function runAutoPipeline() {
+            await extractVocabFromExamples();
+            await autoIndexNewWords();
         }
 
         // Manual "Sort with AI" button: runs the same vocab/grammar split used
@@ -1425,8 +1488,11 @@
                 if (sorted.vocab.length === 0 && !sorted.grammar.trim() && !(sorted.examples && sorted.examples.trim())) {
                     textareaEl.value += `\n\n--- ${sourceLabel} (AI found nothing usable, added raw) ---\n${rawText}`;
                 }
+                state.materials.rawText = textareaEl.value;
+                parseVocab();
                 state.dailyCache = { date: null, questionsByType: {} };
                 saveState();
+                runAutoPipeline(); // fire-and-forget — extracts new vocab from examples, then indexes everything new
             } catch(e) {
                 console.error(e);
                 alert(`AI sorting failed (${e.message}) — adding "${sourceLabel}" as raw text instead. You can sort it manually, or try again once the AI connection is working.`);
@@ -1445,26 +1511,17 @@
         // question), and the result is cached in state.materials.enrichment —
         // so offline fallback sentences can pick semantically sensible word
         // combinations instead of a random noun in every slot.
-        async function enrichVocabWithAI() {
-            if (!state.settings.apiKey || !state.settings.apiUrl) {
-                alert('Add an API key in Settings first.');
-                return;
-            }
-            const words = state.materials.vocabList;
-            if (words.length === 0) {
-                alert('No vocab to index yet — save some in the Input Corpus first.');
-                return;
-            }
-            const btn = document.getElementById('enrichBtn');
-            const statusEl = document.getElementById('enrichStatus');
-            btn.disabled = true;
+        // Shared enrichment worker — indexes whatever word list it's given, in
+        // chunks with spacing to avoid rate-limit bursts. Used both by the
+        // manual "Index Vocabulary" button (all words) and by the automatic
+        // pass after saving materials (only new/unindexed words).
+        async function enrichWordList(words, onProgress) {
             const CHUNK = 25;
             const chunks = [];
             for (let i = 0; i < words.length; i += CHUNK) chunks.push(words.slice(i, i + CHUNK));
-
             let done = 0;
             for (const chunk of chunks) {
-                statusEl.textContent = `Indexing ${done}/${words.length} words...`;
+                if (onProgress) onProgress(done, words.length);
                 const wordList = chunk.map((w, idx) => `${idx + 1}. ${w.latin} (${w.english})`).join('\n');
                 const prompt = `You are indexing a Latin vocabulary list for a study app that generates practice sentences offline (without AI). For each word below, provide:
 - "pos": "noun", "verb", or "adjective"
@@ -1497,9 +1554,54 @@ Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "..
             }
             parseVocab();
             saveState();
+        }
+
+        async function enrichVocabWithAI() {
+            if (!state.settings.apiKey || !state.settings.apiUrl) {
+                alert('Add an API key in Settings first.');
+                return;
+            }
+            const words = state.materials.vocabList;
+            if (words.length === 0) {
+                alert('No vocab to index yet — save some in the Input Corpus first.');
+                return;
+            }
+            const btn = document.getElementById('enrichBtn');
+            const statusEl = document.getElementById('enrichStatus');
+            btn.disabled = true;
+            await enrichWordList(words, (done, total) => { statusEl.textContent = `Indexing ${done}/${total} words...`; });
             statusEl.textContent = `Indexed ${words.length} words.`;
             btn.disabled = false;
             render();
+        }
+
+        // Runs quietly after materials are saved — indexes only words that
+        // aren't already in state.materials.enrichment, so re-saving doesn't
+        // re-spend API calls on words already indexed. This only covers words
+        // that are actually in the vocab list (Input Corpus) — a word that
+        // only appears inside a Style Examples sentence, but isn't also in
+        // the vocab list, won't get picked up here (there's no reliable way
+        // to split arbitrary sentence text into headwords to index).
+        let autoIndexRunning = false;
+        async function autoIndexNewWords() {
+            if (autoIndexRunning) return;
+            if (!state.settings.apiKey || !state.settings.apiUrl) return;
+            const newWords = state.materials.vocabList.filter(w => !state.materials.enrichment[w.latin]);
+            if (newWords.length === 0) return;
+            autoIndexRunning = true;
+            const statusEl = document.getElementById('enrichStatus');
+            if (statusEl) statusEl.textContent = `Auto-indexing ${newWords.length} new word(s)...`;
+            try {
+                await enrichWordList(newWords, (done, total) => {
+                    const el = document.getElementById('enrichStatus');
+                    if (el) el.textContent = `Auto-indexing new words: ${done}/${total}...`;
+                });
+            } finally {
+                autoIndexRunning = false;
+                const el = document.getElementById('enrichStatus');
+                if (el) el.textContent = `Indexed ${state.materials.vocabList.length} words.`;
+                render();
+            }
         }
 
         async function sortMaterialWithAI(rawText, sourceLabel) {
@@ -1561,7 +1663,21 @@ ${rawText.substring(0, 6000)}
                         : (type === 'latToEng' || type === 'engToLat')
                             ? '\nEach question should be a short, simple phrase or single short clause — not a long multi-clause sentence.'
                             : '';
-                    const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}
+                    // Which field (prompt vs target) holds Latin vs English is
+                    // NOT obvious from the type name alone to a model generating
+                    // a whole batch at once — leaving this implicit is what let
+                    // "prompt"/"target" get swapped for a given type sometimes
+                    // (e.g. a "Latin to English" question coming back with
+                    // English in the prompt and Latin in the target). Spell it
+                    // out explicitly instead of relying on inference.
+                    const directionMap = {
+                        latToEng: '"prompt" must be the Latin phrase/sentence; "target" must be its English translation.',
+                        engToLat: '"prompt" must be the English phrase/sentence; "target" must be its Latin translation.',
+                        latSentence: '"prompt" must be the Latin sentence; "target" must be its English translation.',
+                        engSentence: '"prompt" must be the English sentence; "target" must be its Latin translation.'
+                    };
+                    const directionInstruction = directionMap[type] ? `\nField mapping — get this right for every question: ${directionMap[type]}` : '';
+                    const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}${directionInstruction}
 Vocabulary is labeled by part of speech below — use nouns/adjectives only where a noun/adjective belongs (subject, object, etc.), and verbs only as the sentence's actual verb, correctly conjugated/inflected for the person, tense, and mood the sentence needs (never paste a verb's raw principal-parts listing into the sentence as if it were a word). Every generated sentence must be grammatically valid Latin.
 Vary the vocabulary and sentence pattern across the ${count} questions — don't reuse the same word pair or sentence structure repeatedly; each question should feel distinct from the others.
 ${buildVocabSummary()}${grammarContext}${styleContext}${focusContext}
@@ -1574,7 +1690,21 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                         const valid = parsed.questions.filter(qq =>
                             qq && typeof qq.prompt === 'string' && qq.prompt.trim() &&
                             typeof qq.target === 'string' && qq.target.trim()
-                        ).map(qq => ({ ...qq, source: 'ai' }));
+                        ).map(qq => {
+                            // Safety net: if this type's Latin/English fields
+                            // look swapped (e.g. a "latSentence" question with
+                            // English in "prompt" and Latin in "target"), fix it
+                            // rather than serve a backwards question.
+                            const latinFirst = qq.type === 'latToEng' || qq.type === 'latSentence';
+                            const englishFirst = qq.type === 'engToLat' || qq.type === 'engSentence';
+                            if (latinFirst && looksEnglish(qq.prompt) && !looksEnglish(qq.target)) {
+                                return { ...qq, prompt: qq.target, target: qq.prompt, source: 'ai' };
+                            }
+                            if (englishFirst && !looksEnglish(qq.prompt) && looksEnglish(qq.target)) {
+                                return { ...qq, prompt: qq.target, target: qq.prompt, source: 'ai' };
+                            }
+                            return { ...qq, source: 'ai' };
+                        });
                         if (valid.length > 0) return valid;
                     }
                 } catch(e) { console.warn('AI gen failed, using local', e); }
@@ -1825,6 +1955,50 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             }
         }
 
+        function toggleAskInput() {
+            const area = document.getElementById('askInputArea');
+            area.classList.toggle('hidden');
+            if (!area.classList.contains('hidden')) document.getElementById('askInput').focus();
+        }
+
+        async function askAboutQuestion() {
+            const input = document.getElementById('askInput');
+            const question = input.value.trim();
+            if (!question) return;
+            if (!state.settings.apiKey || !state.settings.apiUrl) {
+                alert('Add an API key in Settings first — this needs the AI to answer.');
+                return;
+            }
+            const ctx = state.quiz.askContext;
+            const answersEl = document.getElementById('askAnswers');
+            const btn = document.getElementById('askSubmitBtn');
+            btn.disabled = true;
+            const qId = 'ask_' + Date.now();
+            answersEl.innerHTML += `
+                <div class="bg-stone-50 border border-stone-200 rounded-xl p-3 text-sm" id="${qId}">
+                    <p class="font-bold text-stone-700">You asked: ${question}</p>
+                    <p class="text-stone-400 italic mt-1"><i class="fa-solid fa-circle-notch fa-spin mr-1"></i>Thinking...</p>
+                </div>`;
+            input.value = '';
+            try {
+                const prompt = `A Latin student is asking about a practice question they just did.
+Question they were given: "${ctx.prompt}"
+Correct/model answer: "${ctx.target}"
+What they submitted: "${ctx.userAns || '(nothing, they revealed the answer)'}"
+Their question: "${question}"
+Answer their specific question clearly and directly, like a teacher explaining a grammar point — a few sentences is fine, don't pad it out. If their question reveals a misunderstanding about a specific grammar term, correct it plainly.`;
+                const answer = await callAI(prompt, false);
+                document.getElementById(qId).innerHTML = `
+                    <p class="font-bold text-stone-700">You asked: ${question}</p>
+                    <p class="text-stone-600 mt-1">${answer}</p>`;
+            } catch(e) {
+                document.getElementById(qId).innerHTML = `
+                    <p class="font-bold text-stone-700">You asked: ${question}</p>
+                    <p class="text-terracotta-600 mt-1">Couldn't get an answer right now (${e.message}). Try again in a moment.</p>`;
+            }
+            btn.disabled = false;
+        }
+
         async function evaluateAnswer() {
             const q = state.quiz.questions[state.quiz.index];
             const btn = document.getElementById('submitBtn');
@@ -1912,6 +2086,24 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
                     </div>
                 `;
             }
+
+            // Store context for "ask a question" — needs the question, correct
+            // answer, and what was submitted, regardless of right/wrong.
+            state.quiz.askContext = { prompt: q.prompt, target: q.target, userAns, type: q.type };
+            const askBox = document.getElementById('askBox');
+            askBox.classList.remove('hidden');
+            askBox.innerHTML = `
+                <button onclick="toggleAskInput()" id="askToggleBtn" class="text-xs font-bold text-stone-500 hover:text-stone-800 transition">
+                    <i class="fa-solid fa-circle-question mr-1"></i> Not sure why? Ask about this question
+                </button>
+                <div id="askInputArea" class="hidden mt-2">
+                    <div class="flex gap-2">
+                        <input type="text" id="askInput" placeholder="e.g. why is this indicative not subjunctive?" class="flex-1 text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                        <button onclick="askAboutQuestion()" id="askSubmitBtn" class="px-4 py-2 bg-stone-900 hover:bg-black text-white text-sm font-bold rounded-lg transition">Ask</button>
+                    </div>
+                    <div id="askAnswers" class="space-y-2 mt-3"></div>
+                </div>
+            `;
             
             btn.innerHTML = `Next <span class="text-xs opacity-70 ml-1">(Enter)</span> <i class="fa-solid fa-arrow-right ml-2"></i>`;
             btn.className = "w-full sm:w-auto px-10 py-4 bg-stone-900 hover:bg-black text-white font-bold rounded-xl shadow-lg transition text-lg mt-4";
