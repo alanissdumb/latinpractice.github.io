@@ -582,7 +582,12 @@
 
         function viewQuiz() {
             const q = state.quiz.questions[state.quiz.index];
-            if (!q) return `<div class="text-center p-10">Loading...</div>`;
+            if (!q) return `
+                <div class="max-w-lg mx-auto text-center py-24">
+                    <div class="w-16 h-16 border-4 border-sage-200 border-t-sage-600 rounded-full animate-spin mx-auto mb-6"></div>
+                    <h2 class="text-xl font-classical font-bold text-stone-800 mb-2">Generating your question...</h2>
+                    <p class="text-stone-500 font-serif italic text-sm">This can take a little longer on a local model — hang tight.</p>
+                </div>`;
 
             const badges = {
                 vocab: 'Vocabulary Recall',
@@ -992,10 +997,17 @@
             state.quiz.results = [];
             // Pull from today's pre-generated cache; only hit the API directly
             // if something's missing from it (shouldn't normally happen).
-            state.quiz.questions = state.dailyCache.questionsByType[type]
-                || await generateQuestions(type, state.settings.dailyMix.countPerType);
-            saveState();
-            navigateTo('quiz');
+            if (state.dailyCache.questionsByType[type]) {
+                state.quiz.questions = state.dailyCache.questionsByType[type];
+                saveState();
+                navigateTo('quiz');
+            } else {
+                state.quiz.questions = [];
+                navigateTo('quiz'); // shows the loading spinner immediately
+                state.quiz.questions = await generateQuestions(type, state.settings.dailyMix.countPerType);
+                saveState();
+                render();
+            }
         }
 
         function backToLauncher() {
@@ -1351,8 +1363,11 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             state.quiz.index = 0;
             state.quiz.answered = false;
             state.quiz.results = [];
+            state.quiz.questions = [];
+            navigateTo('quiz'); // shows the loading spinner immediately
             state.quiz.questions = await generateQuestions(type, 5);
-            navigateTo('quiz');
+            saveState();
+            render();
         }
 
         // Approximates real Latin morphology (no macrons, so 2nd vs 3rd conj
@@ -1447,15 +1462,37 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             if (!state.settings.apiKey || !state.settings.apiUrl) return null;
             const body = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
             if (jsonMode) body.response_format = { type: 'json_object' };
-            const res = await fetch(`${state.settings.apiUrl}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.settings.apiKey}` },
-                body: JSON.stringify(body)
-            });
+            // Local models can occasionally hang instead of erroring out —
+            // without a timeout, that would leave the loading spinner stuck
+            // forever with no fallback to offline templates.
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+            let res;
+            try {
+                res = await fetch(`${state.settings.apiUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.settings.apiKey}` },
+                    body: JSON.stringify(body),
+                    signal: controller.signal
+                });
+            } catch(e) {
+                if (e.name === 'AbortError') throw new Error('AI request timed out after 60s');
+                throw e;
+            } finally {
+                clearTimeout(timeoutId);
+            }
             if (!res.ok) throw new Error(`AI request failed (${res.status})`);
             const data = await res.json();
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('Unexpected response shape from AI — check the model name matches exactly what the server reports.');
             const content = data.choices[0].message.content;
-            return jsonMode ? JSON.parse(content) : content;
+            if (jsonMode) {
+                // Local models often don't honor "return ONLY JSON" as
+                // reliably as hosted ones — strip markdown code fences if the
+                // model wrapped its JSON in ```json ... ``` anyway.
+                const cleaned = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+                return JSON.parse(cleaned);
+            }
+            return content;
         }
 
         // Shared by PDF upload and the manual "Sort with AI" button: takes raw
