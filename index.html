@@ -1309,13 +1309,24 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             btn.textContent = 'Testing...';
             resultEl.innerHTML = '';
             try {
-                const res = await fetch(`${url}/chat/completions`, {
+                const res = await fetch(`${normalizeApiUrl(url)}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
                     body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with just the word OK.' }], max_tokens: 5 })
                 });
                 if (res.ok) {
-                    resultEl.innerHTML = '<span class="text-sage-700"><i class="fa-solid fa-check-circle mr-1"></i>Connected — this model and key are working.</span>';
+                    // A 200 status alone isn't proof the request actually
+                    // worked — some local servers return 200 with a bogus
+                    // body for a request they didn't recognize (e.g. a
+                    // malformed URL), rather than a proper error status. Check
+                    // the body actually contains a real answer.
+                    let data;
+                    try { data = await res.json(); } catch(e) { data = null; }
+                    if (data && data.choices && data.choices[0] && data.choices[0].message) {
+                        resultEl.innerHTML = '<span class="text-sage-700"><i class="fa-solid fa-check-circle mr-1"></i>Connected — this model and key are working.</span>';
+                    } else {
+                        resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Got a 200 response, but not a real answer — check the API URL doesn\'t have a trailing slash, and that the model name matches exactly what the server reports.</span>';
+                    }
                 } else if (res.status === 429) {
                     resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Rate limited (429) — the key/URL work, but you\'ve hit the provider\'s request limit for now. Try again shortly.</span>';
                 } else if (res.status === 401 || res.status === 403) {
@@ -1332,7 +1343,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
 
         function saveSettings() {
             state.settings.apiKey = document.getElementById('cfg_key').value;
-            state.settings.apiUrl = document.getElementById('cfg_url').value;
+            state.settings.apiUrl = normalizeApiUrl(document.getElementById('cfg_url').value);
             state.settings.model = document.getElementById('cfg_model').value;
             state.settings.dailyMix.countPerType = parseInt(document.getElementById('dm_count').value) || 20;
             
@@ -1458,6 +1469,14 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // and answer marking used to duplicate this fetch — now there's one
         // place to fix if the API shape ever changes (e.g. switching providers).
         // Set jsonMode=true to request/parse a JSON object response.
+        // Strips any trailing slash(es) so appending "/chat/completions" never
+        // produces a double slash — LM Studio (and possibly other local
+        // servers) doesn't recognize "/v1//chat/completions" as a valid route
+        // and silently returns junk with a 200 status instead of erroring.
+        function normalizeApiUrl(url) {
+            return (url || '').trim().replace(/\/+$/, '');
+        }
+
         async function callAI(prompt, jsonMode) {
             if (!state.settings.apiKey || !state.settings.apiUrl) return null;
             const body = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
@@ -1469,7 +1488,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             const timeoutId = setTimeout(() => controller.abort(), 60000);
             let res;
             try {
-                res = await fetch(`${state.settings.apiUrl}/chat/completions`, {
+                res = await fetch(`${normalizeApiUrl(state.settings.apiUrl)}/chat/completions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.settings.apiKey}` },
                     body: JSON.stringify(body),
