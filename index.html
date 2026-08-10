@@ -1504,14 +1504,41 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             const data = await res.json();
             if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('Unexpected response shape from AI — check the model name matches exactly what the server reports.');
             const content = data.choices[0].message.content;
-            if (jsonMode) {
-                // Local models often don't honor "return ONLY JSON" as
-                // reliably as hosted ones — strip markdown code fences if the
-                // model wrapped its JSON in ```json ... ``` anyway.
-                const cleaned = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-                return JSON.parse(cleaned);
-            }
+            if (jsonMode) return extractJson(content);
             return content;
+        }
+
+        // Local open models are noticeably less reliable than hosted ones at
+        // strictly returning ONLY valid JSON, even when explicitly told to —
+        // common patterns: wrapping it in ```json fences, prefacing it with
+        // "Sure, here's the JSON:", or (for Qwen3.x-style thinking models)
+        // emitting a <think>...</think> reasoning block before the answer.
+        // This tries several strategies before giving up.
+        function extractJson(content) {
+            let text = content.trim();
+            // Strip a <think>...</think> reasoning block if present.
+            text = text.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+            // Strip markdown code fences if the whole thing is wrapped in one.
+            text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+            try {
+                return JSON.parse(text);
+            } catch(e) {
+                // Last resort: grab the outermost {...} substring anywhere in
+                // the text and try that — catches cases with a preamble
+                // sentence before or trailing commentary after the JSON.
+                const start = text.indexOf('{');
+                const end = text.lastIndexOf('}');
+                if (start !== -1 && end > start) {
+                    try {
+                        return JSON.parse(text.slice(start, end + 1));
+                    } catch(e2) {
+                        console.warn('Could not parse AI response as JSON. Raw content:', content);
+                        throw new Error('AI response was not valid JSON (see console for raw content)');
+                    }
+                }
+                console.warn('Could not parse AI response as JSON. Raw content:', content);
+                throw new Error('AI response was not valid JSON (see console for raw content)');
+            }
         }
 
         // Shared by PDF upload and the manual "Sort with AI" button: takes raw
