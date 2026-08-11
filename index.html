@@ -2032,21 +2032,25 @@ ${rawText.substring(0, 6000)}
                         ? `\nGrammar rules in force (required word order, tenses/moods being taught): ${state.materials.grammarNotes.substring(0, 1200)}`
                         : '';
 
-                    // Shuffle the style examples and take a fresh slice each
-                    // time, so the model isn't shown the same few sentences to
-                    // imitate on every single call.
+                    // Style examples are the single most valuable thing in the
+                    // prompt, and 1600 characters was far too stingy — roughly
+                    // eight sentences, which the model averages into bland
+                    // filler. Show 30 of them, and frame them as SKELETONS to
+                    // rebuild rather than a style to vaguely evoke. Asking a
+                    // model to "match a style" produces the mean of the style;
+                    // asking it to reuse a specific grammatical shape with new
+                    // content produces sentences like the real ones.
                     let styleContext = '';
+                    const SENTENCE_TYPES = ['latSentence', 'engSentence', 'unseen'];
                     if (state.materials.styleExamples) {
                         const lines = state.materials.styleExamples.split('\n').map(l => l.trim())
-                            .filter(l => l && !l.startsWith('#') && !l.startsWith('---'));
-                        const picked = [];
-                        let budget = 1600;
-                        for (const line of shuffled(lines)) {
-                            if (budget - line.length < 0) break;
-                            picked.push(line);
-                            budget -= line.length;
+                            .filter(l => l && !l.startsWith('#') && !l.startsWith('---') && /[=]/.test(l));
+                        const picked = shuffled(lines).slice(0, SENTENCE_TYPES.includes(type) ? 30 : 12);
+                        if (picked.length) {
+                            styleContext = SENTENCE_TYPES.includes(type)
+                                ? `\n\nSKELETONS — every one of these is a real sentence set by this student's own teacher. For each question you write, silently pick ONE of them, keep its grammatical shape (its clause structure, its tense sequence, its construction), and write a COMPLETELY DIFFERENT sentence with new people, new vocabulary and a new situation. Never reproduce one of these or merely swap a single word.\n${picked.join('\n')}`
+                                : `\n\nReal examples from this student's tests, for register and difficulty:\n${picked.join('\n')}`;
                         }
-                        if (picked.length) styleContext = `\nReal sentences from this student's own tests — match this level of complexity and this phrasing style, but do NOT reuse these sentences:\n${picked.join('\n')}`;
                     }
 
                     const focusContext = state.practice.focusTopic
@@ -2087,10 +2091,45 @@ ${rawText.substring(0, 6000)}
                         'a question introduced by cur, quis, ubi, or num', 'a direct command (imperative)',
                         'the future or future perfect tense', 'a verb in the first or second person rather than third'
                     ];
+                    // Real teacher sentences are about PEOPLE doing things in
+                    // specific situations. Generated ones drift to abstract
+                    // noun-verb-noun ("the messenger sends the letter") because
+                    // nothing in the prompt supplies a cast. This does.
+                    const CAST = ['Caesar', 'Cicero', 'Catilina', 'Quintus', 'Marcus', 'Sextus', 'Melissa',
+                        'Hannibal', 'Alexander', 'Brutus', 'Augustus', 'Flavia', 'Horatia',
+                        'the consul', 'the centurion', 'the priest (sacerdos)', 'the queen (regina)',
+                        'the slave girl (ancilla)', 'the young man (iuvenis)', 'the old man (senex)',
+                        'the teacher (magister)', 'the students (discipuli)', 'the farmer (agricola)',
+                        'the guards (custodes)', 'the hostages (obsides)', 'the ambassadors (legati)',
+                        'the sailors (nautae)', 'the Gauls (Galli)', 'the enemy (hostes)',
+                        'the Tenth Legion (legio decima)', 'the senate (senatus)', 'the comrades (comites)'];
+
+                    // Checked against his actual papers: nearly every real
+                    // sentence carries two or more of these. Their absence is
+                    // most of why generated ones feel thin next to them.
+                    const INGREDIENTS = [
+                        'a demonstrative agreeing with its noun (hic/haec/hoc, ille/illa/illud, idem/eadem, ipse/ipsa)',
+                        'a possessive or reflexive (suus, meus, tuus, noster, se, sibi)',
+                        'a superlative or comparative (laetissimus, plurimi, celerrime, diligentissime, latissimum, benignior, or quam + superlative)',
+                        'a time or number expression (illo die, postridie, septem horas, novem diebus, multos annos, duos annos, ante noctem, mane, tandem, diu)',
+                        'an ablative phrase — agent with a/ab, instrument (gladio), or place (in horto, e castris, circum templum)',
+                        'a named person from the cast, addressed or acting'
+                    ];
+
+                    const styleRules = SENTENCE_TYPES.includes(type) ? `
+PEOPLE: build each sentence around named people or specific roles, not abstract nouns. Draw on: ${shuffled(CAST).slice(0, 12).join(', ')}. An inanimate thing is never the subject of a human action.
+INGREDIENTS: every sentence must contain AT LEAST TWO of the following, and across the batch all six should appear somewhere:
+${shuffled(INGREDIENTS).map(x => '- ' + x).join('\n')}
+SITUATION: each sentence must describe a plausible situation someone could picture — a siege, a letter, a lesson, a journey, an illness, a trial, a betrayal, a market, a storm at sea. Reject anything that reads as a grammar exercise about nothing.
+BANNED: "<person> lives in the city", "the messenger sends the letter", "the X sees the Y" with no further content, and any sentence whose only content is subject + verb + object.` : '';
+
                     const varietyInstruction = `\nVariety is the priority. Across these ${count} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
 
-                    const prompt = `Generate ${count} Latin practice questions of type "${type}" for a Year 10 / VCE Latin student.${lengthInstruction}${directionInstruction}${varietyInstruction}
-Use the student's own vocabulary below where possible. Nouns/adjectives may only fill nominal slots and verbs only verbal slots, correctly inflected — never paste a dictionary listing verbatim into a sentence. Every Latin sentence must be genuinely grammatical.
+                    const prompt = `You are setting practice questions for a Year 10 / VCE Latin student, working from the Oxford Latin Course. Your sentences must be indistinguishable from ones this student's own teacher would set — the SKELETONS below are real examples of that teacher's work, and matching them is the whole job.
+
+Write ${count} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
+
+ACCURACY: every Latin sentence must be genuinely grammatical — correct case for every noun, correct agreement for every adjective and participle, correct sequence of tenses in subordinate clauses. Use the student's vocabulary below where it fits, but never paste a dictionary listing (e.g. "mitto, mittere, misi, missum") into a sentence; inflect it. If you are not certain a form is right, use a construction you are certain of instead.
 ${vocabSummary}${grammarContext}${styleContext}${focusContext}
 
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"short grammar note, optional"}]}`;
