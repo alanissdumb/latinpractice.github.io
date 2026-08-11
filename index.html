@@ -85,6 +85,7 @@
                     </button>
                 </div>
                 <div class="flex items-center space-x-3">
+                    <div id="profileSwitcher"></div>
                     <button onclick="navigateTo('settings')" class="p-2 rounded-lg text-stone-500 hover:text-sage-700 hover:bg-stone-100 transition" title="Settings">
                         <i class="fa-solid fa-sliders text-base"></i>
                     </button>
@@ -107,6 +108,12 @@
                 model: 'gpt-3.5-turbo',
                 vocabDirection: 'latToEng',
                 batchSize: 5,
+                // Saved connections. apiKey/apiUrl/model above stay as the
+                // ACTIVE connection so every existing call site keeps working;
+                // switching a profile just copies its values into them.
+                profiles: [],
+                activeProfileId: null,
+                autoFallback: true,
                 autoAdvance: false,
                 soundEffects: false
             },
@@ -140,6 +147,16 @@
                     if (parsed.materials) state.materials = { ...DEFAULT_STATE.materials, ...parsed.materials };
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
                     if (parsed.practice) state.practice = { ...DEFAULT_STATE.practice, ...parsed.practice };
+                    // Anyone upgrading has a single connection configured but
+                    // no profiles — turn it into the first profile so they
+                    // don't have to re-enter it.
+                    if (!Array.isArray(state.settings.profiles)) state.settings.profiles = [];
+                    if (state.settings.profiles.length === 0 && state.settings.apiUrl) {
+                        const p = { id: 'p' + Date.now(), name: guessProfileName(state.settings.apiUrl, state.settings.model),
+                                    apiKey: state.settings.apiKey, apiUrl: state.settings.apiUrl, model: state.settings.model };
+                        state.settings.profiles = [p];
+                        state.settings.activeProfileId = p.id;
+                    }
                     // Old saves carried a daily-mix section that no longer exists.
                     delete state.settings.dailyMix;
                     delete state.dailyLauncher;
@@ -362,7 +379,23 @@
             saveState();
         }
 
+        // Lives in the header so the active model can be changed from any
+        // screen mid-comparison, without a round trip through Settings.
+        function renderProfileSwitcher() {
+            const el = document.getElementById('profileSwitcher');
+            if (!el) return;
+            const list = state.settings.profiles || [];
+            if (list.length === 0) { el.innerHTML = ''; return; }
+            const act = activeProfile();
+            el.innerHTML = `
+                <select onchange="switchProfile(this.value)" title="Active AI connection"
+                    class="text-xs font-bold text-stone-600 bg-stone-100 border border-stone-200 rounded-lg pl-2 pr-1 py-1.5 outline-none focus:ring-2 focus:ring-sage-500 cursor-pointer max-w-[10rem] truncate">
+                    ${list.map(p => `<option value="${p.id}" ${act && p.id === act.id ? 'selected' : ''}>${p.name}</option>`).join('')}
+                </select>`;
+        }
+
         function render() {
+            renderProfileSwitcher();
             const container = document.getElementById('appContainer');
             switch(state.view) {
                 case 'home': container.innerHTML = viewHome(); break;
@@ -553,7 +586,7 @@
                         <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
                         ${q.source === 'fallback'
                             ? `<span class="text-[10px] text-terracotta-600 uppercase tracking-widest cursor-help" title="${aiConfigured() ? ('The AI call failed, so this was built offline. ' + (lastAiError || 'Check the browser console.')).replace(/"/g, '&quot;') : 'No AI connection set up, so this was built offline.'}">offline${aiConfigured() ? ' — AI call failed' : ''}</span>`
-                            : (q.source === 'ai' ? '<span class="text-[10px] text-stone-300 uppercase tracking-widest">AI</span>' : '')}
+                            : (q.source === 'ai' ? `<span class="text-[10px] text-stone-400 uppercase tracking-widest" title="Which connection generated this question">${q.provider || 'AI'}</span>` : '')}
                     </div>
 
                     <h2 class="text-3xl sm:text-4xl font-classical font-bold text-stone-900 leading-snug">${q.prompt}</h2>
@@ -755,7 +788,31 @@
 
                 <div class="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 space-y-6">
                     <div>
-                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">AI Connection</h3>
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Saved Connections</h3>
+                        ${(state.settings.profiles || []).length === 0
+                            ? '<p class="text-xs text-stone-400 mb-3">None saved yet. Fill in the fields below and press "Save as connection".</p>'
+                            : `<div class="space-y-2 mb-4">
+                                ${state.settings.profiles.map(p => {
+                                    const act = (activeProfile() || {}).id === p.id;
+                                    return `
+                                    <div class="flex items-center gap-3 p-3 rounded-xl border ${act ? 'bg-sage-50 border-sage-300' : 'bg-stone-50 border-stone-200'}">
+                                        <button onclick="switchProfile('${p.id}')" class="flex-1 text-left min-w-0">
+                                            <div class="font-bold text-sm text-stone-800 flex items-center gap-2">
+                                                ${p.name}
+                                                ${act ? '<span class="text-[9px] uppercase tracking-wider bg-sage-600 text-white px-2 py-0.5 rounded-full">active</span>' : ''}
+                                                ${isLocalUrl(p.apiUrl) ? '<span class="text-[9px] uppercase tracking-wider text-stone-400">local</span>' : ''}
+                                            </div>
+                                            <div class="text-[11px] text-stone-500 truncate">${p.model || 'no model set'} — ${p.apiUrl}</div>
+                                        </button>
+                                        <button onclick="deleteProfile('${p.id}')" class="text-stone-400 hover:text-red-500 transition px-1" title="Delete"><i class="fa-solid fa-trash text-xs"></i></button>
+                                    </div>`;
+                                }).join('')}
+                            </div>
+                            <label class="flex items-start gap-2 text-xs text-stone-600 cursor-pointer mb-4">
+                                <input type="checkbox" id="cfg_fallback" ${state.settings.autoFallback ? 'checked' : ''} class="rounded border-stone-300 mt-0.5">
+                                <span>If the active connection fails, automatically try the others. The question card shows which one answered.</span>
+                            </label>`}
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3 pt-2 border-t border-stone-200">Edit Connection</h3>
                         <div class="space-y-3">
                             <div class="flex gap-2 text-xs">
                                 <button onclick="applyPreset('lmstudio')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">LM Studio (local)</button>
@@ -777,7 +834,11 @@
                                 </div>
                             </div>
                             <p class="text-[11px] text-stone-400">Local servers: open this file directly (file://) — a page served over HTTPS can't reach http://localhost.</p>
-                            <button onclick="testConnection()" id="testConnBtn" class="text-xs font-bold text-sage-700 border border-sage-300 rounded-lg px-3 py-1.5 hover:bg-sage-50 transition">Test Connection</button>
+                            <div class="flex gap-2 items-center">
+                                <input type="text" id="cfg_profile_name" placeholder="Name (optional)" class="text-sm border border-stone-300 rounded-lg p-2 w-40 focus:ring-2 focus:ring-sage-500 outline-none">
+                                <button onclick="saveCurrentAsProfile()" class="text-xs font-bold text-white bg-stone-900 hover:bg-black rounded-lg px-3 py-2 transition">Save as connection</button>
+                                <button onclick="testConnection()" id="testConnBtn" class="text-xs font-bold text-sage-700 border border-sage-300 rounded-lg px-3 py-2 hover:bg-sage-50 transition">Test</button>
+                            </div>
                             <div id="testConnResult" class="text-xs"></div>
                         </div>
                     </div>
@@ -1222,6 +1283,14 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             state.settings.apiUrl = normalizeApiUrl(document.getElementById('cfg_url').value);
             state.settings.model = document.getElementById('cfg_model').value.trim();
             state.settings.batchSize = Math.max(1, Math.min(20, parseInt(document.getElementById('cfg_batch').value) || 5));
+            const fb = document.getElementById('cfg_fallback');
+            if (fb) state.settings.autoFallback = fb.checked;
+            // Keep the active profile in step with hand-edited fields, so a
+            // tweak here isn't silently undone the next time it's selected.
+            const act = activeProfile();
+            if (act && act.apiUrl === state.settings.apiUrl && act.model === state.settings.model) {
+                act.apiKey = state.settings.apiKey;
+            }
             state.settings.autoAdvance = document.getElementById('pref_auto').checked;
             state.settings.soundEffects = document.getElementById('pref_sound').checked;
             saveState();
@@ -1392,6 +1461,66 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // offline templates: callAI returned null before even trying, so it
         // looked exactly like "offline mode" with no error anywhere.
         // A URL is the only thing genuinely required.
+        function guessProfileName(url, model) {
+            if (isLocalUrl(url)) return (model || 'local').split('/').pop();
+            if (/generativelanguage/.test(url)) return model || 'Gemini';
+            if (/openai\.com/.test(url)) return model || 'OpenAI';
+            return (model || url.replace(/^https?:\/\//, '')).slice(0, 24);
+        }
+
+        function activeProfile() {
+            const list = state.settings.profiles || [];
+            return list.find(p => p.id === state.settings.activeProfileId) || list[0] || null;
+        }
+
+        // Switching copies the profile into the live apiKey/apiUrl/model
+        // fields, so nothing else in the app needs to know profiles exist.
+        function switchProfile(id) {
+            const p = (state.settings.profiles || []).find(x => x.id === id);
+            if (!p) return;
+            state.settings.activeProfileId = p.id;
+            state.settings.apiKey = p.apiKey;
+            state.settings.apiUrl = p.apiUrl;
+            state.settings.model = p.model;
+            saveState();
+            render();
+        }
+
+        function saveCurrentAsProfile() {
+            const key = document.getElementById('cfg_key').value;
+            const url = normalizeApiUrl(document.getElementById('cfg_url').value);
+            const model = document.getElementById('cfg_model').value.trim();
+            if (!url) { alert('Enter an API URL first.'); return; }
+            const nameEl = document.getElementById('cfg_profile_name');
+            const name = (nameEl && nameEl.value.trim()) || guessProfileName(url, model);
+            state.settings.profiles = state.settings.profiles || [];
+            // Same URL + model = the same connection; update rather than
+            // accumulate near-duplicates.
+            const existing = state.settings.profiles.find(p => p.apiUrl === url && p.model === model);
+            if (existing) {
+                existing.name = name; existing.apiKey = key;
+                state.settings.activeProfileId = existing.id;
+            } else {
+                const p = { id: 'p' + Date.now(), name, apiKey: key, apiUrl: url, model };
+                state.settings.profiles.push(p);
+                state.settings.activeProfileId = p.id;
+            }
+            state.settings.apiKey = key; state.settings.apiUrl = url; state.settings.model = model;
+            saveState();
+            render();
+        }
+
+        function deleteProfile(id) {
+            state.settings.profiles = (state.settings.profiles || []).filter(p => p.id !== id);
+            if (state.settings.activeProfileId === id) {
+                const first = state.settings.profiles[0];
+                state.settings.activeProfileId = first ? first.id : null;
+                if (first) { state.settings.apiKey = first.apiKey; state.settings.apiUrl = first.apiUrl; state.settings.model = first.model; }
+            }
+            saveState();
+            render();
+        }
+
         function aiConfigured() {
             return !!(state.settings.apiUrl && state.settings.apiUrl.trim());
         }
@@ -1408,13 +1537,13 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             return h;
         }
 
-        async function postChat(body, timeoutMs) {
+        async function postChat(conn, body, timeoutMs) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
             try {
-                return await fetch(`${normalizeApiUrl(state.settings.apiUrl)}/chat/completions`, {
+                return await fetch(`${normalizeApiUrl(conn.apiUrl)}/chat/completions`, {
                     method: 'POST',
-                    headers: buildAuthHeaders(state.settings.apiKey),
+                    headers: buildAuthHeaders(conn.apiKey),
                     body: JSON.stringify(body),
                     signal: controller.signal
                 });
@@ -1423,22 +1552,22 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             }
         }
 
-        async function callAI(prompt, jsonMode) {
-            if (!aiConfigured()) return null;
-            const local = isLocalUrl(state.settings.apiUrl);
+        // One attempt against one specific connection.
+        async function callAIWith(conn, prompt, jsonMode) {
+            const local = isLocalUrl(conn.apiUrl);
             // Local models are much slower to first token, especially on a
             // cold load — 60s was short enough to time out mid-generation.
             const timeoutMs = local ? 180000 : 60000;
-            const base = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
+            const base = { model: conn.model, messages: [{ role: 'user', content: prompt }] };
             const body = { ...base };
             if (jsonMode) body.response_format = { type: 'json_object' };
 
             let res;
             try {
-                res = await postChat(body, timeoutMs);
+                res = await postChat(conn, body, timeoutMs);
             } catch(e) {
-                if (e.name === 'AbortError') throw new Error(`AI request timed out after ${timeoutMs / 1000}s`);
-                if (local) throw new Error("Couldn't reach the local server. Check it's running, that CORS is enabled in its server settings, and that you opened this file directly rather than from a https:// address.");
+                if (e.name === 'AbortError') throw new Error(`timed out after ${timeoutMs / 1000}s`);
+                if (local) throw new Error("couldn't reach the local server (is it running, is CORS on, did you open this as a file rather than https?)");
                 throw e;
             }
 
@@ -1448,19 +1577,60 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             // is already tolerant of fences/preamble, so the result is fine.
             if (!res.ok && jsonMode && (res.status === 400 || res.status === 422 || res.status === 404)) {
                 console.warn(`Server rejected response_format (${res.status}) — retrying without it.`);
-                res = await postChat({ ...base, messages: [{ role: 'user', content: prompt + '\n\nIMPORTANT: reply with raw JSON only. No markdown fences, no commentary.' }] }, timeoutMs);
+                res = await postChat(conn, { ...base, messages: [{ role: 'user', content: prompt + '\n\nIMPORTANT: reply with raw JSON only. No markdown fences, no commentary.' }] }, timeoutMs);
             }
 
             if (!res.ok) {
                 let detail = '';
-                try { detail = (await res.text()).slice(0, 200); } catch(e) {}
-                throw new Error(`AI request failed (${res.status})${detail ? ': ' + detail : ''}`);
+                try { detail = (await res.text()).slice(0, 160); } catch(e) {}
+                throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
             }
             const data = await res.json();
-            if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('Unexpected response shape from AI — check the model name matches exactly what the server reports at /v1/models.');
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('unexpected response shape (does the model name match what the server reports at /v1/models?)');
             const content = data.choices[0].message.content;
             if (jsonMode) return extractJson(content);
             return content;
+        }
+
+        // Which connection actually answered the last successful call. Shown
+        // on the question card — without it, failover would quietly make it
+        // impossible to tell which model wrote a given sentence, which is
+        // exactly the thing being compared.
+        let lastUsedProfileName = '';
+
+        async function callAI(prompt, jsonMode) {
+            if (!aiConfigured()) return null;
+            const active = activeProfile() || { name: guessProfileName(state.settings.apiUrl, state.settings.model),
+                apiKey: state.settings.apiKey, apiUrl: state.settings.apiUrl, model: state.settings.model };
+            const others = state.settings.autoFallback
+                ? (state.settings.profiles || []).filter(p => p.id !== (activeProfile() || {}).id && p.apiUrl)
+                : [];
+            const chain = [active, ...others];
+
+            const errors = [];
+            for (let i = 0; i < chain.length; i++) {
+                const conn = chain[i];
+                try {
+                    const result = await callAIWith(conn, prompt, jsonMode);
+                    lastUsedProfileName = conn.name || guessProfileName(conn.apiUrl, conn.model);
+                    if (i > 0) {
+                        // Falling back silently would hide both the failure and
+                        // the fact that a different model answered.
+                        lastAiError = `${chain[0].name || 'primary'} failed (${errors[0]}) — answered by ${lastUsedProfileName} instead.`;
+                        console.warn(lastAiError);
+                    } else {
+                        lastAiError = '';
+                    }
+                    return result;
+                } catch(e) {
+                    const msg = e.message || String(e);
+                    errors.push(msg);
+                    console.warn(`Connection "${conn.name || conn.apiUrl}" failed: ${msg}`);
+                }
+            }
+            throw new Error(chain.length > 1
+                ? `All ${chain.length} connections failed. ${chain.map((c, i) => `${c.name || c.apiUrl}: ${errors[i]}`).join(' | ')}`
+                : errors[0] || 'AI request failed');
         }
 
         // Local open models are noticeably less reliable than hosted ones at
@@ -2145,7 +2315,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                             let { prompt: p, target: t } = qq;
                             if (latinFirst && looksEnglish(p) && !looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
                             if (englishFirst && !looksEnglish(p) && looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
-                            return { ...qq, type, prompt: p, target: t, source: 'ai' };
+                            return { ...qq, type, prompt: p, target: t, source: 'ai', provider: lastUsedProfileName };
                         });
                         if (valid.length > 0) return valid;
                         console.warn('AI returned questions but none were usable:', parsed);
