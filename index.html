@@ -9,7 +9,7 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;800&family=Inter:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -34,15 +34,20 @@
                         }
                     },
                     fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
                         serif: ['Newsreader', 'Georgia', 'serif'],
-                        classical: ['Cinzel', 'serif'],
+                        classical: ['Fraunces', 'Newsreader', 'Georgia', 'serif'],
                     }
                 }
             }
         }
     </script>
     <style>
+        /* Fraunces is a variable font — set optical size + a little "soft" axis
+           so headings read as warm/bookish rather than the stiff all-caps
+           Roman-inscription look Cinzel gave everything. */
+        .font-classical { font-variation-settings: 'SOFT' 20, 'WONK' 0, 'opsz' 40; letter-spacing: -0.015em; }
+        body { -webkit-font-smoothing: antialiased; }
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(135,160,139,0.4); border-radius: 4px; }
@@ -101,11 +106,7 @@
                 apiUrl: 'https://api.openai.com/v1',
                 model: 'gpt-3.5-turbo',
                 vocabDirection: 'latToEng',
-                dailyMix: {
-                    vocab: true, declining: true, conjugation: true, genderCase: true, principalParts: true,
-                    latToEng: true, engToLat: true, latSentence: true, engSentence: true, unseen: false, moodTenseVoice: false,
-                    countPerType: 20
-                },
+                batchSize: 5,
                 autoAdvance: false,
                 soundEffects: false
             },
@@ -121,11 +122,13 @@
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
-            dailyLauncher: { active: false, completed: [], currentType: null, enabledTypes: [], generating: false, focusTopic: '' },
-            dailyCache: { date: null, focusTopic: '', questionsByType: {} }
+            practice: { focusTopic: '' }
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+        // Surfaced on the question card when a generation call fails, so a
+        // silent drop to offline templates is visible instead of mysterious.
+        let lastAiError = '';
 
         function loadState() {
             try {
@@ -134,11 +137,13 @@
                     const parsed = JSON.parse(saved);
                     state = { ...DEFAULT_STATE, ...parsed };
                     if (parsed.settings) state.settings = { ...DEFAULT_STATE.settings, ...parsed.settings };
-                    if (parsed.settings && parsed.settings.dailyMix) state.settings.dailyMix = { ...DEFAULT_STATE.settings.dailyMix, ...parsed.settings.dailyMix };
                     if (parsed.materials) state.materials = { ...DEFAULT_STATE.materials, ...parsed.materials };
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
-                    if (parsed.dailyLauncher) state.dailyLauncher = { ...DEFAULT_STATE.dailyLauncher, ...parsed.dailyLauncher };
-                    if (parsed.dailyCache) state.dailyCache = { ...DEFAULT_STATE.dailyCache, ...parsed.dailyCache };
+                    if (parsed.practice) state.practice = { ...DEFAULT_STATE.practice, ...parsed.practice };
+                    // Old saves carried a daily-mix section that no longer exists.
+                    delete state.settings.dailyMix;
+                    delete state.dailyLauncher;
+                    delete state.dailyCache;
                 }
             } catch(e) {}
             parseVocab();
@@ -227,14 +232,27 @@
 
         function classifyPos(latin, english) {
             const rawParts = latin.split(',').map(s => s.trim());
-            // Adjectives are conventionally abbreviated like "fessus, -a, -um"
-            // (a 3-part comma list) — that's endings, not principal parts, so
-            // it must never be classified as a verb regardless of part count.
-            if (rawParts.length >= 2 && rawParts.slice(1).some(p => p.startsWith('-'))) return 'noun';
+            // "fessus, -a, -um" is endings, not principal parts — never a verb.
+            // It's also not a noun: lumping adjectives in with nouns is what
+            // let "bonus" turn up as a sentence subject ("the good lives in
+            // the city"), so they get their own class and stay out of noun
+            // slots in generated sentences.
+            if (rawParts.length >= 2 && rawParts.slice(1).some(p => p.startsWith('-'))) return 'adjective';
             if (parseAnkiVerbShorthand(latin)) return 'verb';
             if (/^to\s/i.test(english.trim()) || rawParts.length >= 3) return 'verb';
-            return 'noun'; // covers nouns and adjectives — both fine to plug into a nominal slot
+            // A gloss that reads as a bare quality word is an adjective too.
+            if (ADJECTIVE_GLOSSES.has(gloss(english).toLowerCase())) return 'adjective';
+            return 'noun';
         }
+
+        const ADJECTIVE_GLOSSES = new Set(['good','bad','great','big','small','large','huge','tiny','long','short',
+            'tall','deep','high','low','wide','narrow','heavy','light','strong','weak','brave','cowardly','bold',
+            'timid','fierce','gentle','kind','cruel','harsh','savage','happy','sad','angry','calm','anxious',
+            'worried','tired','weary','eager','keen','lazy','busy','free','safe','dangerous','difficult','hard',
+            'easy','new','old','young','ancient','beautiful','ugly','rich','poor','wise','foolish','stupid',
+            'clever','holy','sacred','famous','unknown','true','false','faithful','wicked','wretched','miserable',
+            'quick','swift','slow','many','few','whole','entire','same','other','similar','different','sick',
+            'ill','healthy','dead','alive','empty','full','clean','dirty','bright','dark','cold','hot','warm']);
 
         // Splits a vocab line into [latin, english]. Prefers a hyphen/equals/colon
         // surrounded by whitespace as the actual field separator — a bare,
@@ -278,10 +296,22 @@
             'weak','tall','short','small','big','huge','tiny','old','young','new','good','bad',
             'kind','cruel','gentle','harsh','quick','slow','easy','hard']);
 
+        // Scored rather than first-match-wins: several of the old English
+        // markers are also real Latin words ("is" = he/that, "his" = to/by
+        // these), so a perfectly good Latin sentence containing one used to be
+        // flagged as English. Weighing English signals against Latin ones
+        // makes that far less likely to misfire.
+        const LATIN_MARKERS = /\b(et|sed|in|ad|cum|non|qui|quae|quod|est|sunt|erat|erant|ut|ne|ex|ab|per|pro|sub|atque|nec|quam|iam|tamen|enim|autem|hic|haec|hoc|ille|illa|illud|ipse|omnis|magnus|res|nam|si|quia|dum|postquam|antequam)\b/gi;
+        const ENGLISH_MARKERS = /\b(the|of|to|was|were|been|being|and|who|that|with|not|her|they|them|their|from|into|will|would|had|has|have|for|but|when|which|there|these|those|because|after|before|while|are|our|your|its|it)\b/gi;
+
         function looksEnglish(s) {
-            const t = s.trim();
-            if (/\b(to|the|of|is|was|were|be|been|and|who|that|with|not|his|her)\b/i.test(t)) return true;
-            if (!t.includes(',') && /(ly|ing|ed|tion|ness|ful|less|ment|able|ible|ous|ive|man|woman)$/i.test(t)) return true;
+            const t = String(s || '').trim();
+            if (!t) return false;
+            const en = (t.match(ENGLISH_MARKERS) || []).length;
+            const la = (t.match(LATIN_MARKERS) || []).length;
+            if (en || la) return en > la;
+            // No function words either way — fall back to word shape.
+            if (!t.includes(',') && /(ly|ing|tion|ness|ful|less|ment|able|ible|ous|ive|man|woman|ship|hood)$/i.test(t)) return true;
             if (!t.includes(',') && !t.includes(' ') && COMMON_ENGLISH_WORDS.has(t.toLowerCase())) return true;
             return false;
         }
@@ -336,7 +366,6 @@
             const container = document.getElementById('appContainer');
             switch(state.view) {
                 case 'home': container.innerHTML = viewHome(); break;
-                case 'daily_launcher': container.innerHTML = viewDailyLauncher(); break;
                 case 'practice_select': container.innerHTML = viewPracticeSelect(); break;
                 case 'quiz': container.innerHTML = viewQuiz(); attachKeybinds(); break;
                 case 'materials': container.innerHTML = viewMaterials(); break;
@@ -364,26 +393,29 @@
                 
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8">
                     <div class="md:col-span-7 flex flex-col space-y-6">
-                        <button onclick="startDailyLauncher()" class="group text-left bg-sage-500 hover:bg-sage-600 text-white rounded-[2rem] p-8 shadow-lg hover:shadow-xl transition transform hover:-translate-y-1 relative overflow-hidden flex flex-col justify-between min-h-[220px]">
-                            <div class="absolute -right-4 -bottom-4 text-sage-400 opacity-30 text-8xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-sun"></i></div>
+                        <button onclick="navigateTo('practice_select')" class="group text-left bg-sage-500 hover:bg-sage-600 text-white rounded-[2rem] p-8 shadow-lg hover:shadow-xl transition transform hover:-translate-y-1 relative overflow-hidden flex flex-col justify-between min-h-[220px]">
+                            <div class="absolute -right-4 -bottom-4 text-sage-400 opacity-30 text-8xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-layer-group"></i></div>
                             <div class="relative z-10">
-                                <span class="bg-white/20 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 inline-block">Daily Custom Mix</span>
-                                <h2 class="text-3xl font-classical font-bold mb-2">Daily Practice</h2>
-                                <p class="text-sage-100 font-serif max-w-sm text-sm">Choose the order you tackle today's categories. Complete them all at your own pace.</p>
+                                <h2 class="text-3xl font-classical font-bold mb-2">Practice</h2>
+                                <p class="text-sage-100 font-serif max-w-sm text-sm">Pick a skill and drill it, endlessly.</p>
                             </div>
                             <div class="relative z-10 mt-6 font-bold text-sm bg-white text-sage-800 px-5 py-2.5 rounded-xl inline-flex items-center w-max shadow-sm group-hover:bg-sage-50 transition">
-                                Start Session <i class="fa-solid fa-arrow-right ml-2 text-xs"></i>
+                                Choose a mode <i class="fa-solid fa-arrow-right ml-2 text-xs"></i>
                             </div>
                         </button>
 
-                        <button onclick="navigateTo('practice_select')" class="group text-left bg-stone-200 hover:bg-stone-300 text-stone-800 rounded-[2rem] p-8 shadow-sm hover:shadow-md transition transform hover:-translate-y-1 relative overflow-hidden flex flex-col justify-between min-h-[180px]">
-                            <div class="absolute -right-4 -bottom-4 text-stone-300 opacity-50 text-8xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-layer-group"></i></div>
-                            <div class="relative z-10">
-                                <span class="bg-stone-300/60 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 inline-block text-stone-700">Infinite Drills</span>
-                                <h2 class="text-2xl font-classical font-bold mb-2">Specific Practice</h2>
-                                <p class="text-stone-600 font-serif max-w-sm text-sm">Isolate a specific skill and drill infinitely.</p>
-                            </div>
-                        </button>
+                        <div class="grid grid-cols-2 gap-4">
+                            <button onclick="navigateTo('materials')" class="text-left bg-stone-200 hover:bg-stone-300 text-stone-800 rounded-2xl p-6 transition">
+                                <i class="fa-solid fa-book-bookmark text-stone-500 mb-2"></i>
+                                <h3 class="font-classical font-bold">Materials</h3>
+                                <p class="text-xs text-stone-600 mt-0.5">${state.materials.vocabList.length} words parsed</p>
+                            </button>
+                            <button onclick="navigateTo('wordbank')" class="text-left bg-stone-200 hover:bg-stone-300 text-stone-800 rounded-2xl p-6 transition">
+                                <i class="fa-solid fa-layer-group text-stone-500 mb-2"></i>
+                                <h3 class="font-classical font-bold">Word Bank</h3>
+                                <p class="text-xs text-stone-600 mt-0.5">${state.wordBank.length} cards</p>
+                            </button>
+                        </div>
                     </div>
 
                     <div class="md:col-span-5 bg-sage-300/30 border border-sage-300/50 rounded-[2rem] p-8 flex flex-col justify-between shadow-inner">
@@ -420,129 +452,6 @@
             </div>`;
         }
 
-        function viewDailyLauncher() {
-            const dm = state.settings.dailyMix;
-            const typeMeta = {
-                vocab: { name: 'Vocabulary Recall', icon: 'fa-book-open', color: 'sage' },
-                declining: { name: 'Declining', icon: 'fa-list-ol', color: 'sage' },
-                conjugation: { name: 'Conjugation', icon: 'fa-font', color: 'sage' },
-                genderCase: { name: 'Number / Gender / Case', icon: 'fa-shapes', color: 'sage' },
-                principalParts: { name: 'Principal Parts', icon: 'fa-font', color: 'sage' },
-                latToEng: { name: 'Latin to English', icon: 'fa-language', color: 'sage' },
-                engToLat: { name: 'English to Latin', icon: 'fa-pen-nib', color: 'terracotta' },
-                latSentence: { name: 'Latin to English Sentences', icon: 'fa-align-left', color: 'sage' },
-                engSentence: { name: 'English to Latin Sentences', icon: 'fa-align-left', color: 'terracotta' },
-                moodTenseVoice: { name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', color: 'sage' },
-                unseen: { name: 'Unseen Practice', icon: 'fa-file-lines', color: 'sage' },
-            };
-            
-            const enabled = Object.keys(dm).filter(k => k !== 'countPerType' && dm[k]);
-            const completed = state.dailyLauncher.completed;
-            const allDone = enabled.length > 0 && enabled.every(e => completed.includes(e));
-            const remaining = enabled.filter(e => !completed.includes(e));
-
-            if (state.dailyLauncher.generating) {
-                return `
-                <div class="animate-fade-in max-w-lg mx-auto text-center py-24">
-                    <div class="w-16 h-16 border-4 border-sage-200 border-t-sage-600 rounded-full animate-spin mx-auto mb-6"></div>
-                    <h2 class="text-xl font-classical font-bold text-stone-800 mb-2">Preparing today's mix...</h2>
-                    <p class="text-stone-500 font-serif italic text-sm">Generating each category once so it's ready for the rest of the day.</p>
-                </div>`;
-            }
-            
-            if (allDone) {
-                const correct = state.dailyLauncher.results ? state.dailyLauncher.results.filter(r => r.correct).length : 0;
-                const total = state.dailyLauncher.results ? state.dailyLauncher.results.length : 0;
-                return `
-                <div class="animate-fade-in max-w-2xl mx-auto text-center py-20">
-                    <div class="w-20 h-20 bg-sage-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg text-white text-3xl">
-                        <i class="fa-solid fa-trophy"></i>
-                    </div>
-                    <h1 class="text-3xl font-classical font-bold text-stone-900 mb-2">Daily Mix Complete!</h1>
-                    <p class="text-stone-500 font-serif italic mb-8">Well done. All categories finished for today.</p>
-                    <div class="bg-white rounded-2xl border border-stone-200 p-8 shadow-sm mb-8">
-                        <div class="text-5xl font-bold font-classical text-sage-700 mb-2">${correct}/${total}</div>
-                        <div class="text-sm text-stone-500 uppercase tracking-wider font-bold">Correct Answers</div>
-                    </div>
-                    <button onclick="endDailySession()" class="px-8 py-3 bg-stone-900 hover:bg-black text-white font-bold rounded-xl shadow transition">Return Home</button>
-                </div>`;
-            }
-
-            return `
-            <div class="animate-fade-in max-w-4xl mx-auto">
-                <div class="flex items-center justify-between mb-6">
-                    <div>
-                        <h1 class="text-3xl font-classical font-bold text-stone-800">Daily Practice</h1>
-                        <p class="text-sm text-stone-500 font-serif italic mt-1">Pick a category to start. Finish them all.</p>
-                    </div>
-                    <div class="text-right">
-                        <div class="text-xs font-bold text-stone-400 uppercase tracking-wider">Progress</div>
-                        <div class="text-2xl font-bold font-classical text-sage-700">${completed.length} / ${enabled.length}</div>
-                    </div>
-                </div>
-
-                <div class="bg-white rounded-2xl border border-stone-200 p-5 mb-6 shadow-sm">
-                    ${state.dailyLauncher.focusTopic ? `
-                        <div class="flex items-center justify-between gap-3 flex-wrap">
-                            <div class="flex items-center gap-2 text-sm">
-                                <i class="fa-solid fa-crosshairs text-terracotta-500"></i>
-                                <span class="text-stone-500">Today's focus:</span>
-                                <span class="font-bold text-stone-800">${state.dailyLauncher.focusTopic}</span>
-                            </div>
-                            <button onclick="clearDailyFocus()" class="text-xs font-bold text-stone-400 hover:text-stone-700 transition">Clear focus</button>
-                        </div>
-                    ` : `
-                        <label class="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2 block">Want to focus on something specific today?</label>
-                        <div class="flex gap-2">
-                            <input type="text" id="focusInput" placeholder="e.g. subjunctive mood, qui/quae/quod, ablative absolute..." class="flex-1 text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
-                            <button onclick="applyDailyFocus()" class="px-4 py-2 bg-stone-900 hover:bg-black text-white text-sm font-bold rounded-lg transition whitespace-nowrap">Focus Today's Mix</button>
-                        </div>
-                        <p class="text-[11px] text-stone-400 mt-2">Regenerates today's questions to prioritize this topic, across whichever categories are enabled below.</p>
-                    `}
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div class="md:col-span-1 space-y-3">
-                        ${enabled.map(key => {
-                            const meta = typeMeta[key];
-                            const isDone = completed.includes(key);
-                            return `
-                            <button onclick="${isDone ? '' : `startDailyCategory('${key}')`}" 
-                                class="w-full text-left p-4 rounded-2xl border transition relative overflow-hidden ${isDone ? 'bg-stone-100 border-stone-200 opacity-60' : 'bg-white border-stone-200 hover:border-sage-300 hover:shadow-md'}">
-                                <div class="flex items-center gap-3 ${isDone ? 'strike-through done' : ''}">
-                                    <div class="w-8 h-8 rounded-lg bg-${meta.color}-100 text-${meta.color}-600 flex items-center justify-center flex-shrink-0 text-sm">
-                                        <i class="fa-solid ${meta.icon}"></i>
-                                    </div>
-                                    <div class="flex-1 min-w-0">
-                                        <div class="font-bold text-stone-800 text-sm truncate">${meta.name}</div>
-                                        <div class="text-[10px] text-stone-400 font-medium">${state.settings.dailyMix.countPerType} questions</div>
-                                    </div>
-                                    ${isDone ? '<i class="fa-solid fa-check text-sage-600"></i>' : '<i class="fa-solid fa-chevron-right text-stone-300"></i>'}
-                                </div>
-                            </button>`;
-                        }).join('')}
-                    </div>
-
-                    <div class="md:col-span-2 bg-white rounded-3xl border border-stone-200 p-8 flex flex-col items-center justify-center text-center shadow-sm">
-                        <div class="w-16 h-16 bg-sage-100 rounded-full flex items-center justify-center text-sage-600 text-2xl mb-4">
-                            <i class="fa-solid fa-sun"></i>
-                        </div>
-                        <h3 class="font-classical font-bold text-xl text-stone-800 mb-2">Ready when you are</h3>
-                        <p class="text-stone-500 text-sm font-serif max-w-xs mb-6">
-                            ${remaining.length} categor${remaining.length === 1 ? 'y' : 'ies'} remaining. 
-                            Choose one from the list to begin.
-                        </p>
-                        <div class="flex gap-2 flex-wrap justify-center">
-                            ${remaining.map(k => {
-                                const m = typeMeta[k];
-                                return `<span class="px-3 py-1 bg-sage-50 text-sage-700 text-xs font-bold rounded-full border border-sage-200">${m.name}</span>`;
-                            }).join('')}
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-        }
-
         function viewPracticeSelect() {
             const modes = [
                 { id: 'vocab', name: 'Vocabulary Recall', icon: 'fa-book-open', desc: 'Type the translation', color: 'sage' },
@@ -557,15 +466,32 @@
                 { id: 'moodTenseVoice', name: 'Mood / Tense / Voice', icon: 'fa-clock-rotate-left', desc: 'Identify verb forms', color: 'sage' },
                 { id: 'unseen', name: 'Unseen Practice', icon: 'fa-file-lines', desc: 'Longer passages', color: 'sage' },
             ];
+            const focus = state.practice.focusTopic;
             return `
             <div class="animate-fade-in space-y-6">
                 <div class="flex items-center justify-between border-b border-stone-200 pb-4">
-                    <div>
-                        <h1 class="text-3xl font-classical font-bold text-stone-800">Practice Modes</h1>
-                        <p class="text-sm text-stone-500 font-serif italic mt-1">Select a topic. Infinite questions.</p>
-                    </div>
+                    <h1 class="text-3xl font-classical font-bold text-stone-800">Practice</h1>
                     <button onclick="navigateTo('home')" class="text-stone-500 hover:text-stone-800 text-sm font-medium"><i class="fa-solid fa-arrow-left mr-1"></i> Back</button>
                 </div>
+
+                <div class="bg-white rounded-2xl border border-stone-200 p-4 shadow-sm">
+                    ${focus ? `
+                        <div class="flex items-center justify-between gap-3 flex-wrap text-sm">
+                            <div class="flex items-center gap-2">
+                                <i class="fa-solid fa-crosshairs text-terracotta-500"></i>
+                                <span class="text-stone-500">Focus:</span>
+                                <span class="font-bold text-stone-800">${focus}</span>
+                            </div>
+                            <button onclick="clearFocus()" class="text-xs font-bold text-stone-400 hover:text-stone-700">Clear</button>
+                        </div>
+                    ` : `
+                        <div class="flex gap-2">
+                            <input type="text" id="focusInput" placeholder="Focus on something? e.g. subjunctive, cum clauses, indirect commands" class="flex-1 text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                            <button onclick="applyFocus()" class="px-4 py-2 bg-stone-900 hover:bg-black text-white text-sm font-bold rounded-lg transition whitespace-nowrap">Set focus</button>
+                        </div>
+                    `}
+                </div>
+
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     ${modes.map(m => `
                         <button onclick="startSpecific('${m.id}')" class="bg-white hover:bg-${m.color}-50 border border-stone-200 p-6 rounded-2xl shadow-sm text-left transition group h-full flex flex-col">
@@ -585,8 +511,8 @@
             if (!q) return `
                 <div class="max-w-lg mx-auto text-center py-24">
                     <div class="w-16 h-16 border-4 border-sage-200 border-t-sage-600 rounded-full animate-spin mx-auto mb-6"></div>
-                    <h2 class="text-xl font-classical font-bold text-stone-800 mb-2">Generating your question...</h2>
-                    <p class="text-stone-500 font-serif italic text-sm">This can take a little longer on a local model — hang tight.</p>
+                    <h2 class="text-xl font-classical font-bold text-stone-800 mb-2">Generating...</h2>
+                    <p class="text-stone-500 font-serif italic text-sm">Local models take a while.</p>
                 </div>`;
 
             const badges = {
@@ -614,25 +540,27 @@
             return `
             <div class="max-w-3xl mx-auto animate-fade-in w-full py-4 flex flex-col justify-center min-h-[70vh]">
                 <div class="flex justify-between items-center mb-6">
-                    <button onclick="${state.dailyLauncher.active ? 'backToLauncher()' : 'navigateTo(\'home\')'}" class="text-stone-500 hover:text-stone-800 bg-white border border-stone-200 w-10 h-10 rounded-full flex items-center justify-center shadow-sm">
+                    <button onclick="navigateTo('practice_select')" class="text-stone-500 hover:text-stone-800 bg-white border border-stone-200 w-10 h-10 rounded-full flex items-center justify-center shadow-sm">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
                     <div class="text-xs font-bold text-stone-400 uppercase tracking-widest">
-                        ${state.dailyLauncher.active ? 'Daily Mix' : (state.quiz.isInfinite ? 'Infinite Practice' : 'Practice')}
+                        ${state.practice.focusTopic ? 'Focus: ' + state.practice.focusTopic : 'Practice'}
                     </div>
                 </div>
 
                 <div class="bg-white rounded-3xl p-8 sm:p-12 shadow-xl border border-stone-100 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden">
                     <div class="flex items-center gap-2">
                         <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
-                        ${q.source === 'fallback' ? '<span class="text-[10px] text-stone-400 uppercase tracking-widest" title="No AI configured, or the AI call failed — this is a fixed offline template, not freshly generated.">offline template</span>' : (q.source === 'ai' ? '<span class="text-[10px] text-stone-300 uppercase tracking-widest">AI-generated</span>' : '')}
+                        ${q.source === 'fallback'
+                            ? `<span class="text-[10px] text-terracotta-600 uppercase tracking-widest cursor-help" title="${aiConfigured() ? ('The AI call failed, so this was built offline. ' + (lastAiError || 'Check the browser console.')).replace(/"/g, '&quot;') : 'No AI connection set up, so this was built offline.'}">offline${aiConfigured() ? ' — AI call failed' : ''}</span>`
+                            : (q.source === 'ai' ? '<span class="text-[10px] text-stone-300 uppercase tracking-widest">AI</span>' : '')}
                     </div>
 
                     <h2 class="text-3xl sm:text-4xl font-classical font-bold text-stone-900 leading-snug">${q.prompt}</h2>
 
                     <div class="w-full pt-4">
                         ${isVocab || isDecl || isConj ? renderVocabInput() : renderStandardInput()}
-                        ${isEngLat ? '<div class="text-[10px] text-stone-400 font-medium text-left italic mt-2"><i class="fa-solid fa-thumbtack mr-1"></i>Remember: your teacher requires the verb to go at the end of the sentence.</div>' : ''}
+                        ${isEngLat ? '<div class="text-[10px] text-stone-400 font-medium text-left italic mt-2"><i class="fa-solid fa-thumbtack mr-1"></i>Verb goes last.</div>' : ''}
                     </div>
 
                     <div id="feedbackBox" class="w-full hidden text-left bg-parchment-100 border border-stone-200 rounded-2xl p-6 mt-4 animate-fade-in"></div>
@@ -642,7 +570,7 @@
                     <button id="submitBtn" onclick="evaluateAnswer()" class="w-full sm:w-auto px-10 py-4 bg-sage-600 hover:bg-sage-700 text-white font-bold rounded-xl shadow-lg transition text-lg mt-4">
                         Submit
                     </button>
-                    <div class="text-[10px] text-stone-400 font-medium italic"><i class="fa-solid fa-keyboard mr-1"></i> Press Enter to submit. If you don't know, press Enter to reveal, then Enter again to skip.</div>
+                    <div class="text-[10px] text-stone-400 font-medium italic"><i class="fa-solid fa-keyboard mr-1"></i> Enter to submit. Enter on an empty box reveals the answer.</div>
                 </div>
             </div>`;
         }
@@ -661,7 +589,7 @@
                 <div class="flex justify-between items-end border-b border-stone-200 pb-4">
                     <div>
                         <h1 class="text-3xl font-classical font-bold text-stone-800">My Materials</h1>
-                        <p class="text-sm text-stone-500 font-serif italic mt-1">Upload PDFs, images, Anki APKG, or paste text.</p>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">PDF, image, Anki deck, or plain text.</p>
                     </div>
                     <button onclick="exportHTML()" class="bg-stone-200 hover:bg-stone-300 text-stone-800 text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition">
                         <i class="fa-solid fa-code mr-1"></i> Export HTML
@@ -695,33 +623,41 @@
                                 <i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Sort with AI
                             </button>
                         </div>
-                        <p class="text-[11px] text-stone-400 mt-2">"Sort with AI" separates real vocab from grammar rules/tables mixed into pasted text — vocab stays here, grammar moves to the Grammar Notes box below. Replaces this box's content with just what it finds, so review after running it. Needs an API key set in Settings.</p>
+                        <p class="text-[11px] text-stone-400 mt-2">Sort with AI splits pasted text into vocab, grammar, and examples. It replaces this box, so check the result.</p>
                         <label class="flex items-center gap-2 mt-3 text-xs text-stone-600 cursor-pointer">
                             <input type="checkbox" id="forceSwapCheck" ${state.materials.forceSwap ? 'checked' : ''} onchange="toggleForceSwap(this.checked)" class="rounded border-stone-300">
-                            My list below is written English - Latin (not Latin - English) — swap every line
+                            My whole list is English - Latin — swap every line
                         </label>
-                        <p class="text-[11px] text-stone-400">Automatic detection catches common patterns, but a plain word pair like "eye - oculus" has nothing to distinguish it — if your whole list is consistently written the reversed way, check this instead of relying on detection.</p>
+                        <p class="text-[11px] text-stone-400">Only for a list that is consistently backwards. For a mixed list, use "Fix Latin/English order with AI".</p>
                     </div>
 
                     <div class="space-y-6">
                         <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
-                            <h3 class="font-classical font-bold text-lg mb-3">Parsed Vocabulary (${state.materials.vocabList.length})</h3>
+                            <div class="flex items-center justify-between gap-3 mb-3">
+                                <h3 class="font-classical font-bold text-lg">Vocabulary <span class="text-stone-400 font-sans text-sm font-normal">${state.materials.vocabList.length}</span></h3>
+                                <input type="text" id="vocabSearch" placeholder="Search words..." oninput="filterVocabList()" class="border border-stone-300 rounded-lg px-3 py-1.5 text-sm w-44 focus:ring-2 focus:ring-sage-500 outline-none">
+                            </div>
                             <div class="max-h-[240px] overflow-y-auto custom-scrollbar border border-stone-100 rounded-xl p-2 bg-stone-50">
-                                <ul class="divide-y divide-stone-200 text-sm font-serif">
+                                <ul id="vocabList" class="divide-y divide-stone-200 text-sm font-serif">
                                     ${state.materials.vocabList.map(v => `
-                                        <li class="py-2 px-2 flex justify-between items-center">
+                                        <li class="py-2 px-2 flex justify-between items-center gap-2">
                                             <strong class="text-stone-900">${v.latin}</strong>
-                                            <span class="text-stone-600">${v.english}</span>
-                                            ${v.semanticCategory ? `<span class="text-[9px] text-sage-600 bg-sage-50 border border-sage-200 rounded-full px-2 py-0.5 ml-2">${v.semanticCategory}</span>` : ''}
+                                            <span class="text-stone-600 text-right">${v.english}</span>
+                                            <span class="text-[9px] text-stone-400 uppercase tracking-wide flex-shrink-0">${(v.pos || '').slice(0, 3)}</span>
                                         </li>
                                     `).join('')}
                                 </ul>
+                                <p id="vocabNoMatch" class="hidden text-xs text-stone-400 italic p-3">No match in your corpus.</p>
                             </div>
-                            <div class="mt-3 pt-3 border-t border-stone-100">
+                            <div class="mt-3 pt-3 border-t border-stone-100 space-y-2">
+                                <button id="fixDirBtn" onclick="fixVocabDirectionWithAI()" class="w-full bg-white hover:bg-stone-50 text-terracotta-600 font-bold py-2.5 rounded-xl shadow-sm border border-terracotta-500/40 transition text-sm">
+                                    <i class="fa-solid fa-right-left mr-1"></i> Fix Latin/English order with AI
+                                </button>
+                                <p id="fixDirStatus" class="text-[11px] text-stone-400">For lists where some lines are Latin-first and others English-first. Checks each line and flips only the backwards ones.</p>
                                 <button id="enrichBtn" onclick="enrichVocabWithAI()" class="w-full bg-white hover:bg-stone-50 text-sage-700 font-bold py-2.5 rounded-xl shadow-sm border border-sage-300 transition text-sm">
                                     <i class="fa-solid fa-diagram-project mr-1"></i> Index Vocabulary with AI
                                 </button>
-                                <p id="enrichStatus" class="text-[11px] text-stone-400 mt-2">${Object.keys(state.materials.enrichment).length > 0 ? `${Object.keys(state.materials.enrichment).length} words indexed so far.` : 'One-time pass: tags each word (person/place/object/etc.) and links related words (e.g. "conicio" ↔ "saxum"), so offline-generated sentences pick sensible pairings instead of random ones. Costs one small API call per ~25 words, not per question — re-run after adding a lot of new vocab.'}</p>
+                                <p id="enrichStatus" class="text-[11px] text-stone-400 mt-2">${Object.keys(state.materials.enrichment).length > 0 ? `${Object.keys(state.materials.enrichment).length} words indexed.` : 'Tags each word and links ones that go together, so offline sentences pair words sensibly. One call per ~25 words.'}</p>
                             </div>
                         </div>
                         
@@ -741,14 +677,14 @@
 
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
                     <h3 class="font-classical font-bold text-lg mb-1">Grammar Notes</h3>
-                    <p class="text-xs text-stone-500 font-serif italic mb-3">Rules, paradigms, word-order requirements, example sentences. Used as context so generated questions follow your teacher's grammar focus — never quizzed as vocab.</p>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Rules and paradigms. Used as context for generation, never quizzed directly.</p>
                     <textarea id="grammarInputArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.grammarNotes}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Grammar Notes</button>
                 </div>
 
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
                     <h3 class="font-classical font-bold text-lg mb-1">Style Examples (Past Tests)</h3>
-                    <p class="text-xs text-stone-500 font-serif italic mb-3">Paste real graded sentences from past tests (either direction) so generated Latin/English Sentences actually match your teacher's real style, sentence complexity, and vocabulary — not just generic phrases. Use "Sort with AI" above or a PDF upload to fill this in automatically, or paste directly here. Saving also scans these sentences for any vocab not already in your Input Corpus and adds it automatically.</p>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Real sentences from past tests, either direction. Generation copies their style. Saving also pulls any new vocab out of them.</p>
                     <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.styleExamples}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
@@ -761,7 +697,7 @@
                 <div class="flex items-center justify-between border-b border-stone-200 pb-4">
                     <div>
                         <h1 class="text-3xl font-classical font-bold text-stone-800">Word Bank</h1>
-                        <p class="text-sm text-stone-500 font-serif italic mt-1">Manage your vocabulary. Used for Anki-style review.</p>
+                        <p class="text-sm text-stone-500 font-serif italic mt-1">Cards used for spaced review.</p>
                     </div>
                     <button onclick="navigateTo('home')" class="text-stone-500 hover:text-stone-800 text-sm font-medium"><i class="fa-solid fa-arrow-left mr-1"></i> Back</button>
                 </div>
@@ -810,20 +746,6 @@
         }
 
         function viewSettings() {
-            const dm = state.settings.dailyMix;
-            const types = [
-                { key: 'vocab', label: 'Vocabulary Recall' },
-                { key: 'declining', label: 'Declining' },
-                { key: 'conjugation', label: 'Conjugation' },
-                { key: 'genderCase', label: 'Number / Gender / Case' },
-                { key: 'principalParts', label: 'Principal Parts' },
-                { key: 'latToEng', label: 'Latin to English Phrases' },
-                { key: 'engToLat', label: 'English to Latin Phrases' },
-                { key: 'latSentence', label: 'Latin to English Sentences' },
-                { key: 'engSentence', label: 'English to Latin Sentences' },
-                { key: 'moodTenseVoice', label: 'Mood / Tense / Voice' },
-                { key: 'unseen', label: 'Unseen Passages' },
-            ];
             return `
             <div class="animate-fade-in max-w-3xl mx-auto space-y-6">
                 <div class="flex items-center justify-between border-b border-stone-200 pb-4">
@@ -835,9 +757,14 @@
                     <div>
                         <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">AI Connection</h3>
                         <div class="space-y-3">
+                            <div class="flex gap-2 text-xs">
+                                <button onclick="applyPreset('lmstudio')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">LM Studio (local)</button>
+                                <button onclick="applyPreset('ollama')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">Ollama (local)</button>
+                                <button onclick="applyPreset('gemini')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">Gemini</button>
+                            </div>
                             <div>
-                                <label class="block text-xs font-semibold text-stone-600 mb-1">API Key</label>
-                                <input type="password" id="cfg_key" value="${state.settings.apiKey}" placeholder="sk-..." class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                                <label class="block text-xs font-semibold text-stone-600 mb-1">API Key <span class="font-normal text-stone-400">— leave blank for a local server</span></label>
+                                <input type="password" id="cfg_key" value="${state.settings.apiKey}" placeholder="sk-... (not needed locally)" class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
                             </div>
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
@@ -849,7 +776,7 @@
                                     <input type="text" id="cfg_model" value="${state.settings.model}" placeholder="gpt-4o" class="w-full text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
                                 </div>
                             </div>
-                            <p class="text-[11px] text-stone-400">AI reads your Input Corpus (vocab) and Grammar Notes to generate questions in your teacher's style and grammar focus. Uploaded images are stored for your own reference but aren't sent to the AI yet.</p>
+                            <p class="text-[11px] text-stone-400">Local servers: open this file directly (file://) — a page served over HTTPS can't reach http://localhost.</p>
                             <button onclick="testConnection()" id="testConnBtn" class="text-xs font-bold text-sage-700 border border-sage-300 rounded-lg px-3 py-1.5 hover:bg-sage-50 transition">Test Connection</button>
                             <div id="testConnResult" class="text-xs"></div>
                         </div>
@@ -865,28 +792,19 @@
                                     <button onclick="setVocabDir('engToLat')" id="btn_engToLat" class="px-4 py-1.5 rounded-md text-xs font-bold transition ${state.settings.vocabDirection === 'engToLat' ? 'bg-sage-600 text-white' : 'text-stone-600 hover:bg-stone-100'}">English → Latin</button>
                                 </div>
                             </div>
-                            <p class="text-[11px] text-stone-400 mt-2">Determines which side you see first during Vocabulary Recall.</p>
+                            <p class="text-[11px] text-stone-400 mt-2">Which side you see first in Vocabulary Recall.</p>
                         </div>
                     </div>
 
                     <div class="border-t border-stone-200 pt-6">
-                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Daily Mix Configuration</h3>
-                        <div class="space-y-3">
-                            ${types.map(t => `
-                                <div class="flex items-center justify-between bg-stone-50 p-3 rounded-xl">
-                                    <label class="flex items-center space-x-3 cursor-pointer">
-                                        <input type="checkbox" id="dm_${t.key}" ${dm[t.key] ? 'checked' : ''} class="rounded text-sage-600 focus:ring-sage-500 w-4 h-4">
-                                        <span class="font-medium text-stone-700 text-sm">${t.label}</span>
-                                    </label>
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Generation</h3>
+                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-200">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <span class="font-medium text-stone-700 text-sm">Questions per batch</span>
+                                    <p class="text-[11px] text-stone-400 mt-0.5">How many are generated per AI call. Higher = fewer calls, longer waits.</p>
                                 </div>
-                            `).join('')}
-                            
-                            <div class="bg-sage-50 border border-sage-200 p-4 rounded-xl mt-4">
-                                <div class="flex items-center justify-between mb-2">
-                                    <span class="font-bold text-stone-700 text-sm">Questions per enabled type</span>
-                                    <input type="number" id="dm_count" min="1" max="100" value="${dm.countPerType}" class="w-20 p-2 bg-white border border-stone-300 rounded-lg text-center font-bold outline-none focus:ring-2 focus:ring-sage-500 text-sm" oninput="document.getElementById('dm_slider').value = this.value">
-                                </div>
-                                <input type="range" id="dm_slider" min="1" max="100" value="${dm.countPerType}" class="w-full" oninput="document.getElementById('dm_count').value = this.value">
+                                <input type="number" id="cfg_batch" min="1" max="20" value="${state.settings.batchSize}" class="w-20 p-2 bg-white border border-stone-300 rounded-lg text-center font-bold outline-none focus:ring-2 focus:ring-sage-500 text-sm">
                             </div>
                         </div>
                     </div>
@@ -913,128 +831,21 @@
             </div>`;
         }
 
-        // ==================== DAILY LAUNCHER LOGIC ====================
-
-        function todayKey() {
-            return new Date().toDateString();
-        }
-
-        async function applyDailyFocus() {
-            const val = document.getElementById('focusInput').value.trim();
-            if (!val) return;
-            state.dailyLauncher.focusTopic = val;
-            await startDailyLauncher();
-        }
-
-        async function clearDailyFocus() {
-            state.dailyLauncher.focusTopic = '';
-            await startDailyLauncher();
-        }
-
-        async function startDailyLauncher() {
-            const dm = state.settings.dailyMix;
-            const enabled = Object.keys(dm).filter(k => k !== 'countPerType' && dm[k]);
-            
-            if (enabled.length === 0) {
-                alert('Enable at least one category in Settings > Daily Mix.');
-                return navigateTo('settings');
-            }
-
-            const focusTopic = state.dailyLauncher.focusTopic || '';
-            state.dailyLauncher = {
-                active: true,
-                completed: [],
-                currentType: null,
-                enabledTypes: enabled,
-                results: [],
-                generating: false,
-                focusTopic
-            };
-
-            // Same calendar day, same focus topic, and every enabled type
-            // already generated? Reuse it — this is what avoids hitting the
-            // API again today.
-            const cacheValid = state.dailyCache.date === todayKey()
-                && (state.dailyCache.focusTopic || '') === focusTopic
-                && enabled.every(t => state.dailyCache.questionsByType[t]);
-
-            if (!cacheValid) {
-                // New day (or focus changed, or newly-enabled category, or
-                // materials changed since last generation) — regenerate just
-                // the missing types.
-                state.dailyLauncher.generating = true;
-                saveState();
-                navigateTo('daily_launcher');
-
-                if (state.dailyCache.date !== todayKey() || (state.dailyCache.focusTopic || '') !== focusTopic) {
-                    state.dailyCache = { date: todayKey(), focusTopic, questionsByType: {} };
-                }
-                for (const type of enabled) {
-                    if (state.dailyCache.questionsByType[type]) continue;
-                    try {
-                        state.dailyCache.questionsByType[type] = await generateQuestions(type, state.settings.dailyMix.countPerType);
-                    } catch(e) {
-                        console.warn('Daily mix generation failed for', type, e);
-                        state.dailyCache.questionsByType[type] = await generateQuestions(type, state.settings.dailyMix.countPerType);
-                    }
-                    // Small gap between calls so a multi-category daily mix
-                    // doesn't fire a burst of requests that trips a per-minute
-                    // rate limit on the free tier.
-                    await new Promise(r => setTimeout(r, 1200));
-                }
-                state.dailyLauncher.generating = false;
-            }
-
-            saveState();
-            navigateTo('daily_launcher');
-        }
-
-        async function startDailyCategory(type) {
-            state.dailyLauncher.currentType = type;
-            state.quiz.isInfinite = false;
-            state.quiz.index = 0;
-            state.quiz.answered = false;
-            state.quiz.results = [];
-            // Pull from today's pre-generated cache; only hit the API directly
-            // if something's missing from it (shouldn't normally happen).
-            if (state.dailyCache.questionsByType[type]) {
-                state.quiz.questions = state.dailyCache.questionsByType[type];
-                saveState();
-                navigateTo('quiz');
-            } else {
-                state.quiz.questions = [];
-                navigateTo('quiz'); // shows the loading spinner immediately
-                state.quiz.questions = await generateQuestions(type, state.settings.dailyMix.countPerType);
-                saveState();
-                render();
-            }
-        }
-
-        function backToLauncher() {
-            navigateTo('daily_launcher');
-        }
-
-        function finishDailyCategory() {
-            const type = state.dailyLauncher.currentType;
-            if (type && !state.dailyLauncher.completed.includes(type)) {
-                state.dailyLauncher.completed.push(type);
-            }
-            if (state.quiz.results) {
-                state.dailyLauncher.results = state.dailyLauncher.results || [];
-                state.dailyLauncher.results.push(...state.quiz.results);
-            }
-            state.dailyLauncher.currentType = null;
-            saveState();
-            navigateTo('daily_launcher');
-        }
-
-        function endDailySession() {
-            state.dailyLauncher = { active: false, completed: [], currentType: null, enabledTypes: [], results: [] };
-            saveState();
-            navigateTo('home');
-        }
-
         // ==================== ACTIONS ====================
+
+        function applyFocus() {
+            const el = document.getElementById('focusInput');
+            if (!el || !el.value.trim()) return;
+            state.practice.focusTopic = el.value.trim();
+            saveState();
+            render();
+        }
+
+        function clearFocus() {
+            state.practice.focusTopic = '';
+            saveState();
+            render();
+        }
 
         function setVocabDir(dir) {
             state.settings.vocabDirection = dir;
@@ -1054,7 +865,7 @@
         async function extractVocabFromExamples() {
             const examples = state.materials.styleExamples;
             if (!examples || !examples.trim()) return;
-            if (!state.settings.apiKey || !state.settings.apiUrl) return;
+            if (!aiConfigured()) return;
             if (state.materials.lastExtractedExamples === examples) return; // unchanged
 
             const statusEl = document.getElementById('enrichStatus');
@@ -1107,10 +918,6 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             const eArea = document.getElementById('styleExamplesArea');
             if (eArea) state.materials.styleExamples = eArea.value;
             parseVocab();
-            // New/changed materials mean anything already cached for today no
-            // longer reflects them — clear it so the next daily mix (or next
-            // category opened) regenerates from the updated content.
-            state.dailyCache = { date: null, questionsByType: {} };
             saveState();
             render();
             runAutoPipeline(); // fire-and-forget — extracts new vocab from examples, then indexes everything new
@@ -1125,8 +932,8 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // for PDF uploads on whatever's currently pasted into the corpus box —
         // for when a grammar sheet gets pasted as text rather than uploaded.
         async function autoSortCorpus() {
-            if (!state.settings.apiKey || !state.settings.apiUrl) {
-                alert('Add an API key in Settings first — sorting vocab from grammar needs the AI.');
+            if (!aiConfigured()) {
+                alert('Set up an AI connection in Settings first — sorting vocab from grammar needs it.');
                 return;
             }
             const btn = document.getElementById('sortBtn');
@@ -1179,6 +986,22 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             throw new Error("No collection database found inside this .apkg file.");
         }
 
+        // Anki fields carry HTML, media tags, cloze wrappers and non-breaking
+        // spaces — all of which would otherwise end up inside a vocab entry.
+        function cleanAnkiField(field) {
+            return String(field || '')
+                .replace(/\[sound:[^\]]*\]/g, '')
+                .replace(/<br\s*\/?>/gi, ' ')
+                .replace(/<[^>]*>/g, '')
+                .replace(/\{\{c\d+::(.*?)(?:::[^}]*)?\}\}/g, '$1')
+                .replace(/&nbsp;/gi, ' ')
+                .replace(/&amp;/gi, '&')
+                .replace(/&lt;/gi, '<')
+                .replace(/&gt;/gi, '>')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
         async function handleFileUpload(event, type) {
             const file = event.target.files[0];
             if (!file) return;
@@ -1209,22 +1032,51 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
                     const SQL = await initSqlJs({ locateFile: filename => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${filename}` });
                     const db = new SQL.Database(dbFile);
                     const res = db.exec("SELECT flds FROM notes");
-                    let text = `\n\n--- APKG: ${file.name} ---\n`;
-                    let cardCount = 0;
+
+                    // Everything already in the corpus, keyed by headword, so a
+                    // re-import of an overlapping deck doesn't duplicate.
+                    const existing = new Set(state.materials.vocabList.map(v => v.latin.split(',')[0].trim().toLowerCase()));
+                    const lines = [];
+                    let cardCount = 0, skipped = 0, flipped = 0;
+
                     if (res.length > 0) {
                         res[0].values.forEach(val => {
-                            const fields = val[0].split('\x1f');
-                            if (fields.length >= 2) {
-                                const lat = fields[0].replace(/<[^>]*>?/gm, '').trim();
-                                const eng = fields[1].replace(/<[^>]*>?/gm, '').trim();
-                                if (lat && eng) { text += `${lat} - ${eng}\n`; cardCount++; }
-                            }
+                            const fields = String(val[0]).split('\x1f').map(cleanAnkiField).filter(Boolean);
+                            if (fields.length < 2) return;
+                            let [lat, eng] = fields;
+                            // Anki decks are inconsistent about which field is
+                            // which, and one collection often mixes both
+                            // directions. Both fields are clean here (unlike a
+                            // pasted line), so decide per card.
+                            if (looksEnglish(lat) && !looksEnglish(eng)) { const t = lat; lat = eng; eng = t; flipped++; }
+                            const head = lat.split(',')[0].trim().toLowerCase();
+                            if (!head || existing.has(head)) { skipped++; return; }
+                            existing.add(head);
+                            lines.push(`${lat} - ${eng}`);
+                            cardCount++;
                         });
                     }
+
                     if (cardCount === 0) {
-                        alert('No flashcards were found inside this .apkg file. It may use a note type this parser can\'t read, or be empty.');
+                        alert(skipped > 0
+                            ? `Nothing new imported — all ${skipped} card(s) in this deck are already in your corpus.`
+                            : 'No flashcards were found inside this .apkg file. It may use a note type this parser can\'t read, or be empty.');
+                    } else {
+                        // The old version only touched the textarea and never
+                        // saved, so anything imported vanished the moment the
+                        // view re-rendered. Write it into state and parse it.
+                        state.materials.rawText = (state.materials.rawText || '').replace(/\s+$/, '')
+                            + `\n\n--- ${file.name} (${cardCount} cards) ---\n` + lines.join('\n');
+                        if (textarea) textarea.value = state.materials.rawText;
+                        parseVocab();
+                        saveState();
+                        render();
+                        alert(`Imported ${cardCount} card(s) from ${file.name}.` +
+                              (skipped ? `\n${skipped} skipped as duplicates.` : '') +
+                              (flipped ? `\n${flipped} were written English-first and have been flipped.` : '') +
+                              `\n\nYour corpus now has ${state.materials.vocabList.length} words. Use the search box under Parsed Vocabulary to check for a specific one.`);
+                        runAutoPipeline();
                     }
-                    textarea.value += text;
                 } catch(e) {
                     console.error(e);
                     alert('Error parsing APKG: ' + e.message);
@@ -1283,6 +1135,21 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             render();
         }
 
+        // Answers "did that .apkg actually go in?" — search the parsed list
+        // rather than scrolling the raw text box.
+        function filterVocabList() {
+            const q = document.getElementById('vocabSearch').value.trim().toLowerCase();
+            const rows = document.querySelectorAll('#vocabList li');
+            let shown = 0;
+            rows.forEach(row => {
+                const hit = row.textContent.toLowerCase().includes(q);
+                row.style.display = hit ? '' : 'none';
+                if (hit) shown++;
+            });
+            const empty = document.getElementById('vocabNoMatch');
+            if (empty) empty.classList.toggle('hidden', shown > 0);
+        }
+
         function filterWordBank() {
             const q = document.getElementById('wbSearch').value.toLowerCase();
             const rows = document.querySelectorAll('#wbTableBody tr');
@@ -1300,9 +1167,12 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             const model = document.getElementById('cfg_model').value;
             const btn = document.getElementById('testConnBtn');
             const resultEl = document.getElementById('testConnResult');
-            if (!key || !url) {
-                resultEl.innerHTML = '<span class="text-terracotta-600">Enter an API key and URL first.</span>';
+            if (!url) {
+                resultEl.innerHTML = '<span class="text-terracotta-600">Enter an API URL first.</span>';
                 return;
+            }
+            if (!/\/v\d/.test(url)) {
+                resultEl.innerHTML = '<span class="text-terracotta-600">The URL is usually missing its version path — e.g. http://localhost:1234<strong>/v1</strong>. Testing anyway...</span>';
             }
             btn.disabled = true;
             const originalText = btn.textContent;
@@ -1311,8 +1181,11 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             try {
                 const res = await fetch(`${normalizeApiUrl(url)}/chat/completions`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-                    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with just the word OK.' }], max_tokens: 5 })
+                    headers: buildAuthHeaders(key),
+                    // No max_tokens: a reasoning model spends its budget on the
+                    // think block and returns an empty message with a low cap,
+                    // which reads as a failure when the connection is fine.
+                    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with just the word OK.' }] })
                 });
                 if (res.ok) {
                     // A 200 status alone isn't proof the request actually
@@ -1335,7 +1208,10 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
                     resultEl.innerHTML = `<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Request failed (${res.status}) — check the API URL and model name.</span>`;
                 }
             } catch(e) {
-                resultEl.innerHTML = '<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Network error — check the API URL is reachable.</span>';
+                const localHint = isLocalUrl(url)
+                    ? " Local server checklist: it's running; CORS is enabled in its server settings; and this page was opened as a file, not over https."
+                    : ' Check the URL is reachable and allows browser (CORS) requests.';
+                resultEl.innerHTML = `<span class="text-terracotta-600"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Couldn't reach the server.${localHint}</span>`;
             }
             btn.disabled = false;
             btn.textContent = originalText;
@@ -1344,24 +1220,29 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         function saveSettings() {
             state.settings.apiKey = document.getElementById('cfg_key').value;
             state.settings.apiUrl = normalizeApiUrl(document.getElementById('cfg_url').value);
-            state.settings.model = document.getElementById('cfg_model').value;
-            state.settings.dailyMix.countPerType = parseInt(document.getElementById('dm_count').value) || 20;
-            
-            ['vocab','declining','conjugation','genderCase','principalParts','latToEng','engToLat','latSentence','engSentence','moodTenseVoice','unseen'].forEach(k => {
-                state.settings.dailyMix[k] = document.getElementById('dm_' + k).checked;
-            });
-            
+            state.settings.model = document.getElementById('cfg_model').value.trim();
+            state.settings.batchSize = Math.max(1, Math.min(20, parseInt(document.getElementById('cfg_batch').value) || 5));
             state.settings.autoAdvance = document.getElementById('pref_auto').checked;
             state.settings.soundEffects = document.getElementById('pref_sound').checked;
             saveState();
             navigateTo('home');
         }
 
+        // Fills in the fields for the connection types actually being used,
+        // so the two settings that have repeatedly caused silent failures
+        // (missing /v1, and expecting a key where none exists) are right by
+        // default rather than typed from memory.
+        function applyPreset(kind) {
+            const f = { key: document.getElementById('cfg_key'), url: document.getElementById('cfg_url'), model: document.getElementById('cfg_model') };
+            if (kind === 'lmstudio') { f.key.value = ''; f.url.value = 'http://localhost:1234/v1'; f.model.value = f.model.value || 'qwen3.5-9b'; }
+            if (kind === 'ollama') { f.key.value = ''; f.url.value = 'http://localhost:11434/v1'; f.model.value = f.model.value || 'qwen3:8b'; }
+            if (kind === 'gemini') { f.url.value = 'https://generativelanguage.googleapis.com/v1beta/openai'; f.model.value = 'gemini-3.5-flash-lite'; f.key.focus(); }
+        }
+
         function resetProgress() {
             if (!confirm('Reset ALL progress? This cannot be undone.')) return;
             state.stats = { completedToday: 0, streak: 0, totalAnswered: 0, totalCorrect: 0, lastStudyDate: null };
             state.wordBank.forEach(w => { w.interval = 1; w.repetitions = 0; w.ease = 2.5; w.due = Date.now(); w.history = []; });
-            state.dailyLauncher = { active: false, completed: [], currentType: null, enabledTypes: [], results: [] };
             saveState();
             navigateTo('home');
         }
@@ -1376,7 +1257,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             state.quiz.results = [];
             state.quiz.questions = [];
             navigateTo('quiz'); // shows the loading spinner immediately
-            state.quiz.questions = await generateQuestions(type, 5);
+            state.quiz.questions = await generateQuestions(type, state.settings.batchSize || 5);
             saveState();
             render();
         }
@@ -1386,31 +1267,59 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // for practice purposes, but the previous version didn't even look at
         // the word: it returned the same fixed example paradigm regardless of
         // what was asked, which is its own version of the noun/verb confusion.
+        // The genitive is what actually identifies the declension and gives
+        // the stem — reading it properly is the only reliable way. The old
+        // version only recognised a genitive ending in "-is", so a perfectly
+        // ordinary 2nd-declension entry like "liber, libri" fell through to
+        // the 3rd-declension guess and produced "liberem, liberis, libere"
+        // instead of "librum, libri, libro".
         function getDeclension(latinEntry) {
-            // Vocab is often given as "word, genitive" (e.g. "rex, regis") —
-            // use the genitive if given, since 3rd declension can't be
-            // reliably derived from the nominative alone.
-            const parts = latinEntry.split(',').map(s => s.trim());
+            const parts = latinEntry.split(',').map(x => x.trim());
             const nom = parts[0];
+            const gen = (parts[1] && !parts[1].startsWith('-')) ? parts[1] : '';
+            const g = gen.toLowerCase();
             const w = nom.toLowerCase();
-            if (parts.length >= 2 && /is$/i.test(parts[1])) {
-                const stem = parts[1].slice(0, -2);
-                return [nom, nom, stem + 'em', parts[1], stem + 'i', stem + 'e'];
+            // "-ius" nouns take a contracted vocative (filius -> fili).
+            const voc = /ius$/i.test(nom) ? nom.slice(0, -2)
+                      : /us$/i.test(nom) ? nom.slice(0, -2) + 'e'
+                      : nom;
+
+            if (gen) {
+                if (/ae$/.test(g)) {                      // 1st
+                    const st = gen.slice(0, -2);
+                    return [nom, nom, st + 'am', gen, gen, st + 'a'];
+                }
+                if (/es$/.test(w) && /ei$/.test(g)) {     // 5th (res, dies)
+                    const st = gen.slice(0, -2);
+                    return [nom, nom, st + 'em', gen, gen, st + 'e'];
+                }
+                if (/us$/.test(g) && /(us|u)$/.test(w)) { // 4th (manus, senatus)
+                    const st = gen.slice(0, -2);
+                    return [nom, nom, st + 'um', gen, st + 'ui', st + 'u'];
+                }
+                if (/i$/.test(g)) {                       // 2nd
+                    const st = gen.slice(0, -1);
+                    if (/um$/i.test(nom)) return [nom, nom, nom, gen, st + 'o', st + 'o'];
+                    return [nom, voc, st + 'um', gen, st + 'o', st + 'o'];
+                }
+                if (/is$/.test(g)) {                      // 3rd
+                    const st = gen.slice(0, -2);
+                    // Common 3rd-declension neuters (flumen/fluminis,
+                    // corpus/corporis) keep the nominative in the accusative.
+                    const neuter = /men$/i.test(nom) || (/us$/i.test(nom) && /(or|er)is$/i.test(gen)) || /(al|ar|e)$/i.test(nom);
+                    return [nom, nom, neuter ? nom : st + 'em', gen, st + 'i', st + 'e'];
+                }
             }
-            if (w.endsWith('a')) {
-                const stem = nom.slice(0, -1);
-                return [nom, nom, stem + 'am', stem + 'ae', stem + 'ae', stem + 'a'];
-            }
-            if (w.endsWith('us')) {
-                const stem = nom.slice(0, -2);
-                return [nom, stem + 'e', stem + 'um', stem + 'i', stem + 'o', stem + 'o'];
-            }
-            if (w.endsWith('um')) {
-                const stem = nom.slice(0, -2);
-                return [nom, nom, nom, stem + 'i', stem + 'o', stem + 'o'];
-            }
-            // No genitive given and doesn't match 1st/2nd declension patterns —
-            // likely 3rd declension; without the genitive this can only be a rough guess.
+
+            // No genitive given — fall back to the nominative's shape.
+            if (/a$/.test(w))  { const st = nom.slice(0, -1); return [nom, nom, st + 'am', st + 'ae', st + 'ae', st + 'a']; }
+            if (/us$/.test(w)) { const st = nom.slice(0, -2); return [nom, voc, st + 'um', st + 'i', st + 'o', st + 'o']; }
+            if (/um$/.test(w)) { const st = nom.slice(0, -2); return [nom, nom, nom, st + 'i', st + 'o', st + 'o']; }
+            if (/er$/.test(w)) { const st = nom.slice(0, -2) + 'r'; return [nom, nom, st + 'um', st + 'i', st + 'o', st + 'o']; }
+            // 3rd-declension adjectives/nouns cited as just "fortis"/"omnis" —
+            // without this the fallback appended to the whole word and gave
+            // "fortisem" instead of "fortem".
+            if (/is$/.test(w)) { const st = nom.slice(0, -2); return [nom, nom, st + 'em', nom, st + 'i', st + 'i']; }
             return [nom, nom, nom + 'em', nom + 'is', nom + 'i', nom + 'e'];
         }
 
@@ -1477,32 +1386,78 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             return (url || '').trim().replace(/\/+$/, '');
         }
 
-        async function callAI(prompt, jsonMode) {
-            if (!state.settings.apiKey || !state.settings.apiUrl) return null;
-            const body = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
-            if (jsonMode) body.response_format = { type: 'json_object' };
-            // Local models can occasionally hang instead of erroring out —
-            // without a timeout, that would leave the loading spinner stuck
-            // forever with no fallback to offline templates.
+        // A local server (LM Studio, Ollama, llama.cpp) has NO API key — it
+        // accepts any Authorization header, or none. Requiring a key here is
+        // what made every local-AI attempt silently fall through to the
+        // offline templates: callAI returned null before even trying, so it
+        // looked exactly like "offline mode" with no error anywhere.
+        // A URL is the only thing genuinely required.
+        function aiConfigured() {
+            return !!(state.settings.apiUrl && state.settings.apiUrl.trim());
+        }
+
+        function isLocalUrl(url) {
+            return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/i.test((url || '').trim());
+        }
+
+        function buildAuthHeaders(key) {
+            const h = { 'Content-Type': 'application/json' };
+            // Only send Authorization when there's actually a key — some local
+            // servers reject "Bearer " with an empty value outright.
+            if (key && key.trim()) h['Authorization'] = `Bearer ${key.trim()}`;
+            return h;
+        }
+
+        async function postChat(body, timeoutMs) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000);
-            let res;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
             try {
-                res = await fetch(`${normalizeApiUrl(state.settings.apiUrl)}/chat/completions`, {
+                return await fetch(`${normalizeApiUrl(state.settings.apiUrl)}/chat/completions`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.settings.apiKey}` },
+                    headers: buildAuthHeaders(state.settings.apiKey),
                     body: JSON.stringify(body),
                     signal: controller.signal
                 });
-            } catch(e) {
-                if (e.name === 'AbortError') throw new Error('AI request timed out after 60s');
-                throw e;
             } finally {
                 clearTimeout(timeoutId);
             }
-            if (!res.ok) throw new Error(`AI request failed (${res.status})`);
+        }
+
+        async function callAI(prompt, jsonMode) {
+            if (!aiConfigured()) return null;
+            const local = isLocalUrl(state.settings.apiUrl);
+            // Local models are much slower to first token, especially on a
+            // cold load — 60s was short enough to time out mid-generation.
+            const timeoutMs = local ? 180000 : 60000;
+            const base = { model: state.settings.model, messages: [{ role: 'user', content: prompt }] };
+            const body = { ...base };
+            if (jsonMode) body.response_format = { type: 'json_object' };
+
+            let res;
+            try {
+                res = await postChat(body, timeoutMs);
+            } catch(e) {
+                if (e.name === 'AbortError') throw new Error(`AI request timed out after ${timeoutMs / 1000}s`);
+                if (local) throw new Error("Couldn't reach the local server. Check it's running, that CORS is enabled in its server settings, and that you opened this file directly rather than from a https:// address.");
+                throw e;
+            }
+
+            // Not every OpenAI-compatible server implements response_format.
+            // Ollama and some llama.cpp builds 400 on it — which used to look
+            // like a total failure. Retry once as a plain request; extractJson
+            // is already tolerant of fences/preamble, so the result is fine.
+            if (!res.ok && jsonMode && (res.status === 400 || res.status === 422 || res.status === 404)) {
+                console.warn(`Server rejected response_format (${res.status}) — retrying without it.`);
+                res = await postChat({ ...base, messages: [{ role: 'user', content: prompt + '\n\nIMPORTANT: reply with raw JSON only. No markdown fences, no commentary.' }] }, timeoutMs);
+            }
+
+            if (!res.ok) {
+                let detail = '';
+                try { detail = (await res.text()).slice(0, 200); } catch(e) {}
+                throw new Error(`AI request failed (${res.status})${detail ? ': ' + detail : ''}`);
+            }
             const data = await res.json();
-            if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('Unexpected response shape from AI — check the model name matches exactly what the server reports.');
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error('Unexpected response shape from AI — check the model name matches exactly what the server reports at /v1/models.');
             const content = data.choices[0].message.content;
             if (jsonMode) return extractJson(content);
             return content;
@@ -1515,9 +1470,14 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // emitting a <think>...</think> reasoning block before the answer.
         // This tries several strategies before giving up.
         function extractJson(content) {
-            let text = content.trim();
-            // Strip a <think>...</think> reasoning block if present.
-            text = text.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+            if (content === null || content === undefined) throw new Error('AI returned an empty message');
+            let text = String(content).trim();
+            // Strip a <think>...</think> reasoning block if present. Some
+            // models emit an unclosed one when they hit the token limit, so
+            // handle that too rather than leaving the whole response wrapped.
+            text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            text = text.replace(/^[\s\S]*?<\/think>/i, '').trim();
+            text = text.replace(/<think>[\s\S]*$/i, '').trim();
             // Strip markdown code fences if the whole thing is wrapped in one.
             text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
             try {
@@ -1546,7 +1506,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // writes each into the right box. Falls back to dumping raw text into
         // the vocab box (with a warning) if no AI is configured yet.
         async function sortAndInsertMaterial(rawText, sourceLabel, textareaEl) {
-            if (!state.settings.apiKey || !state.settings.apiUrl) {
+            if (!aiConfigured()) {
                 alert(`No AI configured yet, so "${sourceLabel}" is being added as raw text — if it's a grammar sheet, this will likely need manual cleanup, or add an API key in Settings first so it can be sorted automatically.`);
                 textareaEl.value += `\n\n--- ${sourceLabel} (unsorted — add an AI key for auto-sorting) ---\n${rawText}`;
                 return;
@@ -1573,7 +1533,6 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
                 }
                 state.materials.rawText = textareaEl.value;
                 parseVocab();
-                state.dailyCache = { date: null, questionsByType: {} };
                 saveState();
                 runAutoPipeline(); // fire-and-forget — extracts new vocab from examples, then indexes everything new
             } catch(e) {
@@ -1620,7 +1579,9 @@ Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "..
                     if (result && Array.isArray(result.words)) {
                         result.words.forEach(w => {
                             if (w && typeof w.latin === 'string') {
-                                const pos = (w.pos === 'verb' || w.pos === 'noun' || w.pos === 'adjective') ? (w.pos === 'adjective' ? 'noun' : w.pos) : undefined;
+                                // Adjectives used to be rewritten to 'noun' here,
+                                // which put them straight back into noun slots.
+                                const pos = ['verb', 'noun', 'adjective'].includes(w.pos) ? w.pos : undefined;
                                 // Safety net: a semanticCategory only makes sense
                                 // for a true noun. If the AI still assigned one
                                 // to something it also marked as an adjective,
@@ -1646,9 +1607,75 @@ Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "..
             saveState();
         }
 
+        // The "swap every line" checkbox only helps when a list is uniformly
+        // backwards. A corpus assembled from several Anki decks is usually
+        // mixed, so this asks the AI per line and flips only what's wrong,
+        // rewriting the corpus text in place.
+        async function fixVocabDirectionWithAI() {
+            if (!aiConfigured()) { alert('Set up an AI connection in Settings first.'); return; }
+            const entries = state.materials.vocabList;
+            if (entries.length === 0) { alert('Nothing parsed yet — save your corpus first.'); return; }
+            if (!confirm(`Check the Latin/English order of all ${entries.length} entries and flip the backwards ones? This rewrites your Input Corpus.`)) return;
+
+            const btn = document.getElementById('fixDirBtn');
+            const statusEl = document.getElementById('fixDirStatus');
+            if (btn) btn.disabled = true;
+
+            const CHUNK = 40;
+            const swaps = new Set();
+            let failed = 0;
+            for (let i = 0; i < entries.length; i += CHUNK) {
+                const chunk = entries.slice(i, i + CHUNK);
+                if (statusEl) statusEl.textContent = `Checking ${Math.min(i + CHUNK, entries.length)}/${entries.length}...`;
+                const listing = chunk.map((e, idx) => `${idx + 1}. LEFT="${e.latin}" RIGHT="${e.english}"`).join('\n');
+                const prompt = `Each numbered line below is a vocabulary entry with two sides. Exactly one side is LATIN and the other is its ENGLISH meaning.
+
+For each line, decide whether it is already in the order LEFT=Latin, RIGHT=English. Return the numbers of ONLY the lines that are BACKWARDS (that is, where LEFT is the English and RIGHT is the Latin).
+
+Judge by the language of the words themselves, not by which looks longer. Latin entries often appear as dictionary forms like "miles, militis" or "mitto, mittere, misi, missum". If a line is ambiguous or you are unsure, do NOT include it.
+
+${listing}
+
+Return ONLY JSON: {"backwards": [numbers]}`;
+                try {
+                    const result = await callAI(prompt, true);
+                    if (result && Array.isArray(result.backwards)) {
+                        result.backwards.forEach(n => {
+                            const idx = i + (parseInt(n, 10) - 1);
+                            if (idx >= i && idx < i + chunk.length) swaps.add(idx);
+                        });
+                    }
+                } catch(e) {
+                    console.warn('Direction check failed for chunk', i, e);
+                    failed++;
+                }
+                await new Promise(r => setTimeout(r, 1200));
+            }
+
+            if (swaps.size === 0) {
+                if (statusEl) statusEl.textContent = failed ? `No changes made (${failed} batch(es) failed — check the console).` : 'Checked — every entry was already the right way round.';
+                if (btn) btn.disabled = false;
+                return;
+            }
+
+            // Rebuild the corpus text from the corrected entries, so what's
+            // shown in the box matches what was parsed.
+            const rebuilt = entries.map((e, idx) => swaps.has(idx) ? `${e.english} - ${e.latin}` : `${e.latin} - ${e.english}`);
+            state.materials.rawText = rebuilt.join('\n');
+            // A blanket swap on top of a per-line fix would undo it.
+            state.materials.forceSwap = false;
+            const area = document.getElementById('rawInputArea');
+            if (area) area.value = state.materials.rawText;
+            parseVocab();
+            saveState();
+            render();
+            alert(`Flipped ${swaps.size} entr${swaps.size === 1 ? 'y' : 'ies'} that were written English-first.` +
+                  (failed ? `\n\n${failed} batch(es) failed and were left alone.` : ''));
+        }
+
         async function enrichVocabWithAI() {
-            if (!state.settings.apiKey || !state.settings.apiUrl) {
-                alert('Add an API key in Settings first.');
+            if (!aiConfigured()) {
+                alert('Set up an AI connection in Settings first.');
                 return;
             }
             const words = state.materials.vocabList;
@@ -1675,7 +1702,7 @@ Return ONLY JSON: {"words": [{"latin": "(exact latin from the list)", "pos": "..
         let autoIndexRunning = false;
         async function autoIndexNewWords() {
             if (autoIndexRunning) return;
-            if (!state.settings.apiKey || !state.settings.apiUrl) return;
+            if (!aiConfigured()) return;
             const newWords = state.materials.vocabList.filter(w => !state.materials.enrichment[w.latin]);
             if (newWords.length === 0) return;
             autoIndexRunning = true;
@@ -1718,299 +1745,577 @@ ${rawText.substring(0, 6000)}
             };
         }
 
-        async function generateQuestions(type, count) {
-            const vocab = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
-            if (vocab.length === 0) vocab.push({latin:'puella',english:'girl',pos:'noun'}, {latin:'bonus',english:'good',pos:'noun'});
+        // ==================== OFFLINE SENTENCE ENGINE ====================
+        // Everything below runs with no AI. The old version had exactly one
+        // template per type (every latToEng question was literally
+        // "<word> in urbe habitat"), which is why generated sentences all
+        // looked identical and always mentioned the city. This builds real
+        // sentences from actual morphology across a bank of constructions.
 
-            // Build a clean, explicitly POS-labeled vocab list for the AI, instead
-            // of dumping the raw corpus text — the raw text mixes nouns, verbs,
-            // and adjectives with no labels, which is exactly what let a verb's
-            // principal parts get used as if it were a noun.
-            function buildVocabSummary() {
-                const nouns = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === 'noun').slice(0, 40);
-                const verbs = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === 'verb').slice(0, 40);
-                let out = '';
-                if (nouns.length) out += `Nouns/adjectives: ${nouns.map(v => `${v.latin} (${v.english})`).join('; ')}\n`;
-                if (verbs.length) out += `Verbs (principal parts given — inflect/conjugate as needed, don't paste the dictionary form verbatim): ${verbs.map(v => `${v.latin} (${v.english})`).join('; ')}`;
-                return out;
+        const rand = arr => arr[Math.floor(Math.random() * arr.length)];
+        const shuffled = arr => arr.map(x => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+
+        // A vocab entry's Latin field is a full dictionary listing
+        // ("rex, regis", "mitto, mittere, misi, missus"). Dropping it into a
+        // sentence whole produced things like "rex, regis in urbe habitat" —
+        // always take just the headword.
+        function headword(entry) {
+            return String(entry || '').split(',')[0].trim().split(/\s+/)[0].trim();
+        }
+
+        // "to send, dispatch" -> "send". Strips the infinitive marker, extra
+        // senses, and any parenthetical.
+        function gloss(english) {
+            return String(english || '')
+                .replace(/\([^)]*\)/g, '')
+                .split(/[,;\/]| or /)[0]
+                .replace(/^\s*to\s+/i, '')
+                .replace(/^\s*(a|an|the)\s+/i, '')
+                .trim();
+        }
+
+        const EN_PAST = {
+            send:'sent', see:'saw', say:'said', tell:'told', give:'gave', take:'took', make:'made',
+            find:'found', hear:'heard', hold:'held', keep:'kept', lead:'led', leave:'left', lose:'lost',
+            meet:'met', read:'read', run:'ran', seek:'sought', sell:'sold', sit:'sat', stand:'stood',
+            teach:'taught', think:'thought', throw:'threw', understand:'understood', win:'won', write:'wrote',
+            build:'built', buy:'bought', catch:'caught', choose:'chose', come:'came', do:'did', drink:'drank',
+            drive:'drove', eat:'ate', fall:'fell', feel:'felt', fight:'fought', flee:'fled', fly:'flew',
+            forget:'forgot', get:'got', go:'went', grow:'grew', know:'knew', lay:'laid', lie:'lay',
+            put:'put', rise:'rose', seem:'seemed', set:'set', shake:'shook', shine:'shone', shout:'shouted',
+            sing:'sang', sleep:'slept', speak:'spoke', spend:'spent', steal:'stole', strike:'struck',
+            swim:'swam', wear:'wore', bear:'bore', beat:'beat', begin:'began', bring:'brought', break:'broke',
+            hide:'hid', bind:'bound', draw:'drew', fear:'feared', have:'had', be:'was'
+        };
+        const EN_PP = { ...EN_PAST, see:'seen', give:'given', take:'taken', write:'written', throw:'thrown',
+            know:'known', do:'done', drive:'driven', eat:'eaten', fall:'fallen', forget:'forgotten',
+            break:'broken', choose:'chosen', drink:'drunk', speak:'spoken', steal:'stolen', wear:'worn',
+            bear:'borne', begin:'begun', hide:'hidden', draw:'drawn', go:'gone', grow:'grown', rise:'risen',
+            sing:'sung', swim:'swum', be:'been' };
+
+        function en3sg(base) {
+            if (/[sxz]$|[cs]h$/i.test(base)) return base + 'es';
+            if (/[^aeiou]y$/i.test(base)) return base.slice(0, -1) + 'ies';
+            return base + 's';
+        }
+        function enPast(base) {
+            const w = base.toLowerCase();
+            if (EN_PAST[w]) return EN_PAST[w];
+            if (/e$/i.test(base)) return base + 'd';
+            if (/[^aeiou]y$/i.test(base)) return base.slice(0, -1) + 'ied';
+            return base + 'ed';
+        }
+        function enPP(base) {
+            const w = base.toLowerCase();
+            if (EN_PP[w]) return EN_PP[w];
+            return enPast(base);
+        }
+        function enGerund(base) {
+            if (/[^aeiou]e$/i.test(base) && !/ee$/i.test(base)) return base.slice(0, -1) + 'ing';
+            return base + 'ing';
+        }
+
+        // Gender is only reliably derivable for 1st/2nd declension shapes.
+        // Anything else returns null, and patterns needing agreement (perfect
+        // passives) are skipped rather than guessed at — a wrong participle
+        // ending is worse than a slightly narrower template bank.
+        function guessGender(entry) {
+            const parts = entry.split(',').map(x => x.trim());
+            const nom = parts[0].toLowerCase();
+            const gen = (parts[1] || '').toLowerCase();
+            if (gen && !/^-/.test(gen)) {
+                if (/ae$/.test(gen) && /a$/.test(nom)) return 'f';
+                if (/i$/.test(gen) && /(us|er)$/.test(nom)) return 'm';
+                if (/i$/.test(gen) && /um$/.test(nom)) return 'n';
+                return null; // 3rd/4th/5th — gender isn't derivable from form
             }
-            
-            if (state.settings.apiKey && state.settings.apiUrl && type !== 'vocab' && type !== 'declining' && type !== 'conjugation') {
+            if (/a$/.test(nom)) return 'f';
+            if (/us$|er$/.test(nom)) return 'm';
+            if (/um$/.test(nom)) return 'n';
+            return null;
+        }
+
+        // Nominative/accusative plural, only for the two declensions where the
+        // ending is unambiguous.
+        function pluralForms(entry) {
+            const nom = headword(entry);
+            const g = guessGender(entry);
+            if (g === 'f' && /a$/i.test(nom)) return { nom: nom.slice(0, -1) + 'ae', acc: nom.slice(0, -1) + 'as' };
+            if (g === 'm' && /us$/i.test(nom)) return { nom: nom.slice(0, -2) + 'i', acc: nom.slice(0, -2) + 'os' };
+            if (g === 'm' && /er$/i.test(nom)) { const st = entry.split(',')[1] ? entry.split(',')[1].trim().slice(0, -1) : nom; return { nom: st + 'i', acc: st + 'os' }; }
+            if (g === 'n' && /um$/i.test(nom)) return { nom: nom.slice(0, -2) + 'a', acc: nom.slice(0, -2) + 'a' };
+            return null;
+        }
+
+        // Everything the sentence patterns need from one verb entry. Returns
+        // null for anything it can't inflect confidently (deponents, unusual
+        // shapes) so those verbs simply don't get used in generated sentences.
+        function verbEngine(entry) {
+            const shorthand = parseAnkiVerbShorthand(entry);
+            const parts = entry.split(',').map(x => x.trim());
+            let inf, conj, first;
+            if (shorthand) { inf = shorthand.infinitive.toLowerCase(); conj = shorthand.conj; first = shorthand.present; }
+            else {
+                first = parts[0];
+                inf = (parts[1] || '').toLowerCase();
+                if (!inf) return null;
+                if (inf.endsWith('are')) conj = '1';
+                else if (inf.endsWith('ire')) conj = '4';
+                else if (inf.endsWith('ere')) conj = /eo$/i.test(first) ? '2' : '3';
+                else return null; // -ari/-eri deponents and irregulars: skipped
+            }
+            if (!/(are|ere|ire)$/.test(inf)) return null;
+            const stem = inf.slice(0, -3);
+            const io = conj === '3' && /io$/i.test(first);
+
+            // Perfect and supine stems only exist when full principal parts
+            // were supplied — Anki shorthand has neither.
+            const perfStem = (!shorthand && parts[2]) ? parts[2].replace(/i$/, '') : null;
+            const supStem = (!shorthand && parts[3]) ? parts[3].replace(/(um|us)$/, '') : null;
+
+            const thematic = conj === '1' ? 'a' : conj === '2' ? 'e' : conj === '4' ? 'ie' : (io ? 'ie' : 'e');
+
+            return {
+                inf,
+                pres3sg: conj === '1' ? stem + 'at' : conj === '2' ? stem + 'et' : conj === '4' ? stem + 'it' : (io ? stem + 'it' : stem + 'it'),
+                pres3pl: conj === '1' ? stem + 'ant' : conj === '2' ? stem + 'ent' : conj === '4' ? stem + 'iunt' : (io ? stem + 'iunt' : stem + 'unt'),
+                impf3sg: stem + thematic + 'bat',
+                impf3pl: stem + thematic + 'bant',
+                fut3sg: (conj === '1' || conj === '2') ? stem + thematic + 'bit' : stem + (io || conj === '4' ? 'iet' : 'et'),
+                presSubj3sg: conj === '1' ? stem + 'et' : conj === '2' ? stem + 'eat' : conj === '4' ? stem + 'iat' : (io ? stem + 'iat' : stem + 'at'),
+                presSubj3pl: conj === '1' ? stem + 'ent' : conj === '2' ? stem + 'eant' : conj === '4' ? stem + 'iant' : (io ? stem + 'iant' : stem + 'ant'),
+                impfSubj3sg: inf + 't',      // imperfect subjunctive = present infinitive + ending
+                impfSubj3pl: inf + 'nt',
+                perf3sg: perfStem ? perfStem + 'it' : null,
+                perf3pl: perfStem ? perfStem + 'erunt' : null,
+                plupf3sg: perfStem ? perfStem + 'erat' : null,
+                plupfSubj3sg: perfStem ? perfStem + 'isset' : null,
+                ppp: supStem ? { m: supStem + 'us', f: supStem + 'a', n: supStem + 'um' } : null
+            };
+        }
+
+        // Random pairing produces grammatical nonsense like "the war saw the
+        // king" or "the book works so hard that...". AI indexing (collocates +
+        // semantic category) fixes this properly, but it isn't always run, so
+        // there's a built-in animacy check as a floor: things that can't act
+        // don't get used as subjects of verbs.
+        const ANIMATE_GLOSSES = new Set(['king','queen','soldier','messenger','girl','boy','man','woman','child',
+            'children','slave','master','servant','leader','general','commander','citizen','farmer','sailor',
+            'priest','priestess','teacher','master','student','pupil','friend','enemy','father','mother',
+            'brother','sister','son','daughter','parent','horse','dog','wolf','lion','bird','animal','horseman',
+            'guard','prisoner','captive','poet','senator','consul','merchant','trader','doctor','judge','thief',
+            'hero','god','goddess','guest','host','stranger','messenger','centurion','emperor','sentry','crowd',
+            'army','people','youth','old man','woman','athlete','singer','actor','hunter','shepherd','witness',
+            'nurse','cook','baker','robber','pirate','giant','ghost','client','patron','ally','tribune','legate']);
+
+        function isAnimate(v) {
+            if (v.semanticCategory === 'person' || v.semanticCategory === 'animal') return true;
+            if (v.semanticCategory) return false; // indexed as object/place/abstract/etc.
+            return ANIMATE_GLOSSES.has(gloss(v.english).toLowerCase());
+        }
+
+        function capitalise(str) {
+            return str ? str.charAt(0).toUpperCase() + str.slice(1) : str;
+        }
+
+        const PLACES = [
+            { abl: 'in urbe', acc: 'ad urbem', eng: 'in the city', engTo: 'to the city' },
+            { abl: 'in silva', acc: 'in silvam', eng: 'in the forest', engTo: 'into the forest' },
+            { abl: 'in foro', acc: 'ad forum', eng: 'in the forum', engTo: 'to the forum' },
+            { abl: 'in litore', acc: 'ad litus', eng: 'on the shore', engTo: 'to the shore' },
+            { abl: 'in castris', acc: 'ad castra', eng: 'in the camp', engTo: 'to the camp' },
+            { abl: 'in templo', acc: 'in templum', eng: 'in the temple', engTo: 'into the temple' },
+            { abl: 'in villa', acc: 'ad villam', eng: 'in the villa', engTo: 'to the villa' },
+            { abl: 'prope flumen', acc: 'trans flumen', eng: 'near the river', engTo: 'across the river' },
+            { abl: 'in monte', acc: 'in montem', eng: 'on the mountain', engTo: 'onto the mountain' },
+            { abl: 'in via', acc: 'per vias', eng: 'on the road', engTo: 'through the streets' }
+        ];
+        // `manner` marks the ones that can follow "tam" ("so bravely") —
+        // "tam heri" ("so yesterday") is not a sentence.
+        const ADVERBS = [
+            { lat: 'saepe', eng: 'often', manner: true }, { lat: 'tandem', eng: 'at last' },
+            { lat: 'statim', eng: 'immediately' }, { lat: 'celeriter', eng: 'quickly', manner: true },
+            { lat: 'fortiter', eng: 'bravely', manner: true }, { lat: 'diu', eng: 'for a long time' },
+            { lat: 'iterum', eng: 'again' }, { lat: 'numquam', eng: 'never' },
+            { lat: 'semper', eng: 'always' }, { lat: 'heri', eng: 'yesterday' },
+            { lat: 'hodie', eng: 'today' }, { lat: 'subito', eng: 'suddenly' },
+            { lat: 'libenter', eng: 'gladly', manner: true }, { lat: 'magnopere', eng: 'greatly', manner: true },
+            { lat: 'lente', eng: 'slowly', manner: true }, { lat: 'crudeliter', eng: 'cruelly', manner: true },
+            { lat: 'facile', eng: 'easily', manner: true }, { lat: 'cras', eng: 'tomorrow' }
+        ];
+
+        // Each pattern returns {lat, eng} or null when it needs something this
+        // particular verb/noun can't supply (no perfect stem, unknown gender).
+        // Callers just retry with another pattern.
+        const SENTENCE_PATTERNS = [
+            c => ({ lat: `${c.Sn} ${c.Oa} ${c.v.pres3sg}.`, eng: `The ${c.sEn} ${en3sg(c.vEn)} the ${c.oEn}.` }),
+            c => ({ lat: `${c.adv.lat} ${c.Sn} ${c.Oa} ${c.v.impf3sg}.`, eng: `The ${c.sEn} was ${c.adv.eng} ${enGerund(c.vEn)} the ${c.oEn}.` }),
+            c => c.v.perf3sg && ({ lat: `${c.Sn} ${c.Oa} ${c.v.perf3sg}.`, eng: `The ${c.sEn} ${enPast(c.vEn)} the ${c.oEn}.` }),
+            c => ({ lat: `${c.Sn} ${c.Oa} ${c.v.fut3sg}.`, eng: `The ${c.sEn} will ${c.vEn} the ${c.oEn}.` }),
+            c => ({ lat: `${c.Sn} ${c.place.abl} ${c.Oa} ${c.v.pres3sg}.`, eng: `The ${c.sEn} ${en3sg(c.vEn)} the ${c.oEn} ${c.place.eng}.` }),
+            c => ({ lat: `${c.Sn} festinat ut ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The ${c.sEn} is hurrying in order to ${c.vEn} the ${c.oEn}.` }),
+            c => ({ lat: `${c.Sn} ${c.place.acc} fugit ne ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The ${c.sEn} is fleeing ${c.place.engTo} so as not to ${c.vEn} the ${c.oEn}.` }),
+            c => c.v.plupfSubj3sg && ({ lat: `Cum ${c.Sn} ${c.Oa} ${c.v.plupfSubj3sg}, cives ${c.adv.lat} timebant.`, eng: `When the ${c.sEn} had ${enPP(c.vEn)} the ${c.oEn}, the citizens were ${c.adv.eng} afraid.` }),
+            c => ({ lat: `Cum ${c.Sn} ${c.Oa} ${c.v.impfSubj3sg}, ${c.place.abl} manebamus.`, eng: `While the ${c.sEn} was ${enGerund(c.vEn)} the ${c.oEn}, we were waiting ${c.place.eng}.` }),
+            c => c.v.perf3sg && ({ lat: `${c.Sn}, qui ${c.Oa} ${c.v.perf3sg}, nunc ${c.place.abl} est.`, eng: `The ${c.sEn}, who ${enPast(c.vEn)} the ${c.oEn}, is now ${c.place.eng}.` }),
+            c => c.sAnimate && ({ lat: `magister ${c.Sd} persuasit ut ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The teacher persuaded the ${c.sEn} to ${c.vEn} the ${c.oEn}.` }),
+            c => c.sAnimate && ({ lat: `dux ${c.Sa} monuit ne ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The leader warned the ${c.sEn} not to ${c.vEn} the ${c.oEn}.` }),
+            c => c.Spl && ({ lat: `${c.Spl.nom} ${c.adv.lat} ${c.Oa} ${c.v.pres3pl}.`, eng: `The ${c.sEnPl} ${c.adv.eng} ${c.vEn} the ${c.oEn}.` }),
+            c => c.v.perf3sg && ({ lat: `${c.adv.lat} ${c.Sn} ${c.place.abl} ${c.Oa} ${c.v.perf3sg}.`, eng: `${c.adv.eng.charAt(0).toUpperCase() + c.adv.eng.slice(1)} the ${c.sEn} ${enPast(c.vEn)} the ${c.oEn} ${c.place.eng}.` }),
+            c => c.sAnimate && ({ lat: `nuntius dicit ${c.Sa} ${c.Oa} ${c.v.inf}.`, eng: `The messenger says that the ${c.sEn} is ${enGerund(c.vEn)} the ${c.oEn}.` }),
+            c => c.v.plupf3sg && ({ lat: `ubi ${c.Sn} ${c.Oa} ${c.v.plupf3sg}, omnes gaudebant.`, eng: `When the ${c.sEn} had ${enPP(c.vEn)} the ${c.oEn}, everyone was rejoicing.` }),
+            c => (c.v.ppp && c.oGender) && ({ lat: `${c.On} a ${c.Sabl} ${c.v.ppp[c.oGender]} est.`, eng: `The ${c.oEn} was ${enPP(c.vEn)} by the ${c.sEn}.` }),
+            c => (c.sAnimate && c.adv.manner) && ({ lat: `tam ${c.adv.lat} ${c.Sn} laborat ut ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The ${c.sEn} works so ${c.adv.eng} that he ${en3sg(c.vEn)} the ${c.oEn}.` }),
+            c => c.sAnimate && ({ lat: `cur ${c.Sn} ${c.Oa} ${c.v.pres3sg}?`, eng: `Why does the ${c.sEn} ${c.vEn} the ${c.oEn}?` }),
+            c => (c.sAnimate && c.Spl) && ({ lat: `${c.Spl.nom} ${c.place.acc} festinaverunt ut ${c.Oa} ${c.v.presSubj3pl}.`, eng: `The ${c.sEnPl} hurried ${c.place.engTo} in order to ${c.vEn} the ${c.oEn}.` })
+        ];
+
+        const PHRASE_PATTERNS = [
+            c => ({ lat: `${c.Oa} ${c.v.pres3sg}`, eng: `he ${en3sg(c.vEn)} the ${c.oEn}` }),
+            c => ({ lat: `${c.Sn} ${c.v.impf3sg}`, eng: `the ${c.sEn} was ${enGerund(c.vEn)}` }),
+            c => ({ lat: `${c.On} ${c.Sg}`, eng: `the ${c.oEn} of the ${c.sEn}` }),
+            c => ({ lat: `cum ${c.Sabl}`, eng: `with the ${c.sEn}` }),
+            c => ({ lat: `sine ${c.Sabl}`, eng: `without the ${c.sEn}` }),
+            c => ({ lat: `${c.Sd} ${c.Oa} ${c.v.pres3sg}`, eng: `he ${en3sg(c.vEn)} the ${c.oEn} to the ${c.sEn}` }),
+            c => ({ lat: `${c.Oa} ${c.v.inf}`, eng: `to ${c.vEn} the ${c.oEn}` }),
+            c => c.Spl && ({ lat: `${c.Spl.nom} ${c.v.pres3pl}`, eng: `the ${c.sEnPl} ${c.vEn}` }),
+            c => ({ lat: `${c.place.acc}`, eng: `${c.place.engTo}` }),
+            c => ({ lat: `${c.Sn} ${c.place.abl}`, eng: `the ${c.sEn} ${c.place.eng}` }),
+            c => c.v.perf3sg && ({ lat: `${c.Sn} ${c.v.perf3sg}`, eng: `the ${c.sEn} ${enPast(c.vEn)}` }),
+            c => ({ lat: `${c.adv.lat} ${c.v.pres3pl}`, eng: `they ${c.adv.eng} ${c.vEn}` })
+        ];
+
+        function pluralEn(word) {
+            if (/(s|x|z|ch|sh)$/i.test(word)) return word + 'es';
+            if (/[^aeiou]y$/i.test(word)) return word.slice(0, -1) + 'ies';
+            if (/man$/i.test(word)) return word.slice(0, -3) + 'men';
+            return word + 's';
+        }
+
+        async function generateQuestions(type, count) {
+            // Copy, don't alias: the old code pushed placeholder words straight
+            // into state.materials.vocabList when the list was empty, which
+            // permanently polluted the saved corpus with "puella"/"bonus".
+            const source = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
+            const vocab = source.length > 0 ? source.slice() : [
+                { latin: 'puella, puellae', english: 'girl', pos: 'noun' },
+                { latin: 'nuntius, nuntii', english: 'messenger', pos: 'noun' },
+                { latin: 'epistula, epistulae', english: 'letter', pos: 'noun' },
+                { latin: 'mitto, mittere, misi, missum', english: 'to send', pos: 'verb' }
+            ];
+
+            const posOf = v => v.pos || classifyPos(v.latin, v.english);
+            const nouns = vocab.filter(v => posOf(v) === 'noun');
+            const verbs = vocab.filter(v => posOf(v) === 'verb');
+            const adjectives = vocab.filter(v => posOf(v) === 'adjective');
+
+            // ---------- AI PATH ----------
+            // vocab/declining/conjugation/principalParts stay local on purpose:
+            // they must quiz the student's own list, not words an AI invents.
+            const LOCAL_ONLY = ['vocab', 'declining', 'conjugation', 'principalParts'];
+            if (aiConfigured() && !LOCAL_ONLY.includes(type)) {
                 try {
+                    // Sample randomly rather than always slicing from the top.
+                    // Always sending the first 40 words and the first 1500
+                    // characters of examples meant every batch, every day, saw
+                    // the same handful of words and the same three or four
+                    // model sentences — which is most of why everything came
+                    // out sounding the same.
+                    const sample = (arr, n) => shuffled(arr).slice(0, n);
+                    const summaryParts = [];
+                    if (nouns.length) summaryParts.push(`Nouns: ${sample(nouns, 30).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (adjectives.length) summaryParts.push(`Adjectives: ${sample(adjectives, 15).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (verbs.length) summaryParts.push(`Verbs (principal parts given — conjugate as the sentence needs; never paste the dictionary listing into a sentence): ${sample(verbs, 30).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    const vocabSummary = summaryParts.join('\n');
+
                     const grammarContext = state.materials.grammarNotes
-                        ? `\nGrammar rules and requirements to follow (e.g. required word order, tenses/moods in focus, forms taught so far): ${state.materials.grammarNotes.substring(0, 1000)}`
+                        ? `\nGrammar rules in force (required word order, tenses/moods being taught): ${state.materials.grammarNotes.substring(0, 1200)}`
                         : '';
-                    const styleContext = state.materials.styleExamples
-                        ? `\nActual example sentences from past tests — match this exact style, sentence complexity, and vocabulary usage as closely as possible: ${state.materials.styleExamples.substring(0, 1500)}`
+
+                    // Shuffle the style examples and take a fresh slice each
+                    // time, so the model isn't shown the same few sentences to
+                    // imitate on every single call.
+                    let styleContext = '';
+                    if (state.materials.styleExamples) {
+                        const lines = state.materials.styleExamples.split('\n').map(l => l.trim())
+                            .filter(l => l && !l.startsWith('#') && !l.startsWith('---'));
+                        const picked = [];
+                        let budget = 1600;
+                        for (const line of shuffled(lines)) {
+                            if (budget - line.length < 0) break;
+                            picked.push(line);
+                            budget -= line.length;
+                        }
+                        if (picked.length) styleContext = `\nReal sentences from this student's own tests — match this level of complexity and this phrasing style, but do NOT reuse these sentences:\n${picked.join('\n')}`;
+                    }
+
+                    const focusContext = state.practice.focusTopic
+                        ? `\nThe student has asked to focus on: "${state.practice.focusTopic}". Where this question type allows it, make most questions genuinely require that concept. Don't force it where it doesn't fit.`
                         : '';
-                    const focusContext = state.dailyLauncher.focusTopic
-                        ? `\nToday's specific focus, requested by the student: "${state.dailyLauncher.focusTopic}". As much as this question type allows, prioritize testing this concept specifically (e.g. if it's a grammar topic like "subjunctive" or "qui/quae/quod", make sure most questions actually require using/identifying it; if it's a vocab theme, favor relevant words). Don't force it somewhere it genuinely doesn't fit the question type, but lean into it wherever it does.`
-                        : '';
-                    // latToEng/engToLat are deliberately short phrases; latSentence/engSentence
-                    // need to be genuinely full, exam-style sentences, not just longer phrases.
+
                     const lengthInstruction = (type === 'latSentence' || type === 'engSentence')
-                        ? '\nEach question must be a FULL, grammatically complete Latin sentence (not a short phrase) — use subordinate/relative clauses, ablative absolutes, passive or deponent verbs, or participles where appropriate, matching the complexity of any style examples and grammar notes given below. Do not produce simple 3-4 word phrases.'
+                        ? '\nEach question must be a FULL, grammatically complete sentence with a subordinate clause, participle, ablative absolute, or passive/deponent verb where appropriate. No 3-4 word phrases.'
                         : (type === 'latToEng' || type === 'engToLat')
-                            ? '\nEach question should be a short, simple phrase or single short clause — not a long multi-clause sentence.'
-                            : '';
-                    // Which field (prompt vs target) holds Latin vs English is
-                    // NOT obvious from the type name alone to a model generating
-                    // a whole batch at once — leaving this implicit is what let
-                    // "prompt"/"target" get swapped for a given type sometimes
-                    // (e.g. a "Latin to English" question coming back with
-                    // English in the prompt and Latin in the target). Spell it
-                    // out explicitly instead of relying on inference.
+                            ? '\nEach question is a SHORT phrase or single short clause — a prepositional phrase, a noun with its genitive, a verb with its object. Not a full multi-clause sentence.'
+                            : (type === 'unseen')
+                                ? '\nEach question is a short connected passage of 3-4 sentences telling a small story, with the whole English translation as the target.'
+                                : '';
+
                     const directionMap = {
-                        latToEng: '"prompt" must be the Latin phrase/sentence; "target" must be its English translation.',
-                        engToLat: '"prompt" must be the English phrase/sentence; "target" must be its Latin translation.',
+                        latToEng: '"prompt" must be the Latin phrase; "target" must be its English translation.',
+                        engToLat: '"prompt" must be the English phrase; "target" must be its Latin translation.',
                         latSentence: '"prompt" must be the Latin sentence; "target" must be its English translation.',
-                        engSentence: '"prompt" must be the English sentence; "target" must be its Latin translation.'
+                        engSentence: '"prompt" must be the English sentence; "target" must be its Latin translation.',
+                        unseen: '"prompt" must be the Latin passage; "target" must be its full English translation.',
+                        genderCase: '"prompt" must ask for the number, gender and case of a single inflected Latin noun form; "target" must be the answer, e.g. "Singular, Feminine, Accusative".',
+                        moodTenseVoice: '"prompt" must ask for the mood, tense and voice of a single inflected Latin verb form; "target" must be the answer, e.g. "Subjunctive, Imperfect, Active".'
                     };
                     const directionInstruction = directionMap[type] ? `\nField mapping — get this right for every question: ${directionMap[type]}` : '';
-                    const prompt = `Generate ${count} Latin ${type} practice questions.${lengthInstruction}${directionInstruction}
-Vocabulary is labeled by part of speech below — use nouns/adjectives only where a noun/adjective belongs (subject, object, etc.), and verbs only as the sentence's actual verb, correctly conjugated/inflected for the person, tense, and mood the sentence needs (never paste a verb's raw principal-parts listing into the sentence as if it were a word). Every generated sentence must be grammatically valid Latin.
-Vary the vocabulary and sentence pattern across the ${count} questions — don't reuse the same word pair or sentence structure repeatedly; each question should feel distinct from the others.
-${buildVocabSummary()}${grammarContext}${styleContext}${focusContext}
-Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"..."}]}`;
+
+                    // The single biggest cause of same-y output was asking for
+                    // "variety" in the abstract. Naming specific constructions,
+                    // and rotating WHICH ones get named per call, forces the
+                    // spread instead of hoping for it.
+                    const CONSTRUCTIONS = [
+                        'a purpose clause (ut/ne + subjunctive)', 'a result clause (tam/adeo ... ut)',
+                        'a cum clause with the pluperfect subjunctive', 'a cum clause with the imperfect subjunctive',
+                        'an indirect command (persuadeo/rogo/impero/moneo/oro/hortor + ut/ne)',
+                        'an indirect statement (accusative + infinitive)', 'a relative clause (qui/quae/quod)',
+                        'an ablative absolute', 'a passive verb in a past tense', 'a deponent or semi-deponent verb',
+                        'a present participle used attributively', 'quam + a superlative',
+                        'an ablative of comparison, price, or origin', 'a conditional clause',
+                        'a question introduced by cur, quis, ubi, or num', 'a direct command (imperative)',
+                        'the future or future perfect tense', 'a verb in the first or second person rather than third'
+                    ];
+                    const varietyInstruction = `\nVariety is the priority. Across these ${count} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
+
+                    const prompt = `Generate ${count} Latin practice questions of type "${type}" for a Year 10 / VCE Latin student.${lengthInstruction}${directionInstruction}${varietyInstruction}
+Use the student's own vocabulary below where possible. Nouns/adjectives may only fill nominal slots and verbs only verbal slots, correctly inflected — never paste a dictionary listing verbatim into a sentence. Every Latin sentence must be genuinely grammatical.
+${vocabSummary}${grammarContext}${styleContext}${focusContext}
+
+Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"short grammar note, optional"}]}`;
+
                     const parsed = await callAI(prompt, true);
                     if (parsed && Array.isArray(parsed.questions)) {
-                        // Drop anything malformed rather than trusting the
-                        // response wholesale — a missing prompt/target would
-                        // otherwise surface as a broken, unanswerable question.
                         const valid = parsed.questions.filter(qq =>
                             qq && typeof qq.prompt === 'string' && qq.prompt.trim() &&
                             typeof qq.target === 'string' && qq.target.trim()
                         ).map(qq => {
-                            // Safety net: if this type's Latin/English fields
-                            // look swapped (e.g. a "latSentence" question with
-                            // English in "prompt" and Latin in "target"), fix it
-                            // rather than serve a backwards question.
-                            const latinFirst = qq.type === 'latToEng' || qq.type === 'latSentence';
-                            const englishFirst = qq.type === 'engToLat' || qq.type === 'engSentence';
-                            if (latinFirst && looksEnglish(qq.prompt) && !looksEnglish(qq.target)) {
-                                return { ...qq, prompt: qq.target, target: qq.prompt, source: 'ai' };
-                            }
-                            if (englishFirst && !looksEnglish(qq.prompt) && looksEnglish(qq.target)) {
-                                return { ...qq, prompt: qq.target, target: qq.prompt, source: 'ai' };
-                            }
-                            return { ...qq, source: 'ai' };
+                            const latinFirst = type === 'latToEng' || type === 'latSentence' || type === 'unseen';
+                            const englishFirst = type === 'engToLat' || type === 'engSentence';
+                            let { prompt: p, target: t } = qq;
+                            if (latinFirst && looksEnglish(p) && !looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
+                            if (englishFirst && !looksEnglish(p) && looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
+                            return { ...qq, type, prompt: p, target: t, source: 'ai' };
                         });
                         if (valid.length > 0) return valid;
+                        console.warn('AI returned questions but none were usable:', parsed);
                     }
-                } catch(e) { console.warn('AI gen failed, using local', e); }
+                } catch(e) {
+                    console.warn('AI generation failed, falling back to offline templates:', e);
+                    lastAiError = e.message || String(e);
+                }
             }
 
+            // ---------- OFFLINE PATH ----------
             const questions = [];
             const dir = state.settings.vocabDirection;
 
-            // Different question types need different parts of speech — asking
-            // someone to "conjugate" a noun, or plugging a verb's principal
-            // parts into a sentence's subject slot, produces nonsense. Pick
-            // from the right pool per type instead of any random vocab word.
-            function pickVocab(pos) {
-                const pool = vocab.filter(v => (v.pos || classifyPos(v.latin, v.english)) === pos);
-                const source = pool.length > 0 ? pool : vocab;
-                return source[Math.floor(Math.random() * source.length)];
-            }
-            const VERB_TYPES = ['conjugation', 'principalParts', 'moodTenseVoice'];
-            // Turns a stored "to send" style gloss into "sends" for use in a
-            // natural English sentence, with basic spelling rules covered.
-            function thirdPersonVerbForm(english) {
-                const base = english.replace(/^to\s+/i, '').trim().split(/[,;]/)[0].trim();
-                if (/[sxz]$|[cs]h$/i.test(base)) return base + 'es';
-                if (/[^aeiou]y$/i.test(base)) return base.slice(0, -1) + 'ies';
-                return base + 's';
-            }
+            const usableVerbs = verbs.filter(v => verbEngine(v.latin));
+            const usableNouns = nouns.length ? nouns : vocab;
 
-            const NOUN_TYPES = ['declining', 'latToEng', 'engToLat', 'latSentence', 'engSentence', 'genderCase', 'unseen'];
+            // Prefer AI-indexed collocate pairs (verb + a noun it genuinely
+            // goes with) so the sentence means something, but fall back to a
+            // random pairing when nothing is indexed yet.
+            const animateNouns = usableNouns.filter(isAnimate);
+            const thingNouns = usableNouns.filter(n => !isAnimate(n));
 
-            // Active present 3rd-singular form — used for the collocate-based
-            // sentence pattern below. Deponents are skipped for this (their
-            // active-meaning 3sg is actually passive in form, e.g. "hortatur",
-            // which would need separate handling), kept simple by excluding them.
-            function getActivePresent3sg(latinEntry) {
-                const shorthand = parseAnkiVerbShorthand(latinEntry);
-                let inf, conj;
-                if (shorthand) { inf = shorthand.infinitive.toLowerCase(); conj = shorthand.conj; }
-                else {
-                    const parts = latinEntry.split(',').map(s => s.trim());
-                    inf = (parts.length >= 2 ? parts[1] : parts[0]).toLowerCase();
-                    if (inf.endsWith('are')) conj = '1';
-                    else if (inf.endsWith('ire')) conj = '4';
-                    else if (inf.endsWith('ere')) conj = /eo$/i.test(parts[0]) ? '2' : '3';
-                    else return null; // deponent (-ari/-eri) or unrecognized — skip
+            function buildContext() {
+                if (usableVerbs.length === 0 || usableNouns.length === 0) return null;
+                let verb = rand(usableVerbs);
+                let obj = null;
+                const indexed = usableVerbs.filter(vv => Array.isArray(vv.collocates) && vv.collocates.length);
+                if (indexed.length && Math.random() < 0.7) {
+                    const cand = rand(indexed);
+                    const objs = usableNouns.filter(n => cand.collocates.includes(n.latin));
+                    if (objs.length) { verb = cand; obj = rand(objs); }
                 }
-                if (!inf.endsWith('are') && !inf.endsWith('ere') && !inf.endsWith('ire')) return null;
-                const stem = inf.slice(0, -3);
-                if (conj === '1') return stem + 'at';
-                if (conj === '2') return stem + 'et';
-                if (conj === '4') return stem + 'it';
-                return stem + 'it';
+                // Prefer a thing as the object, a person/animal as the subject.
+                if (!obj) obj = rand(thingNouns.length && Math.random() < 0.75 ? thingNouns : usableNouns);
+                const animSubj = animateNouns.filter(n => n.latin !== obj.latin);
+                const anySubj = usableNouns.filter(n => n.latin !== obj.latin);
+                const subj = animSubj.length ? rand(animSubj) : (anySubj.length ? rand(anySubj) : obj);
+
+                const sForms = getDeclension(subj.latin);
+                const oForms = getDeclension(obj.latin);
+                const sEn = gloss(subj.english);
+                const oEn = gloss(obj.english);
+                // Don't put "in urbe ... urbem" in the same sentence.
+                const places = PLACES.filter(p => !p.eng.includes(sEn) && !p.eng.includes(oEn));
+                return {
+                    sAnimate: isAnimate(subj),
+                    v: verbEngine(verb.latin),
+                    vEn: gloss(verb.english),
+                    sEn, sEnPl: pluralEn(sEn),
+                    oEn,
+                    Sn: sForms[0], Sa: sForms[2], Sg: sForms[3], Sd: sForms[4], Sabl: sForms[5],
+                    On: oForms[0], Oa: oForms[2], Og: oForms[3], Od: oForms[4], Oabl: oForms[5],
+                    Spl: pluralForms(subj.latin),
+                    oGender: guessGender(obj.latin),
+                    place: rand(places.length ? places : PLACES),
+                    adv: rand(ADVERBS)
+                };
             }
 
-            // Picks a verb that's been AI-indexed with real collocates, plus one
-            // of those collocate nouns actually present in the current vocab —
-            // e.g. "mitto" linked to "epistula" — so the sentence is a real,
-            // sensible pairing instead of two random words.
-            function pickVerbCollocatePair() {
-                const verbs = vocab.filter(vv => (vv.pos || classifyPos(vv.latin, vv.english)) === 'verb'
-                    && Array.isArray(vv.collocates) && vv.collocates.length > 0
-                    && getActivePresent3sg(vv.latin));
-                if (verbs.length === 0) return null;
-                const verb = verbs[Math.floor(Math.random() * verbs.length)];
-                const objCandidates = vocab.filter(n => verb.collocates.includes(n.latin));
-                if (objCandidates.length === 0) return null;
-                const obj = objCandidates[Math.floor(Math.random() * objCandidates.length)];
-                const subjPool = vocab.filter(n => (n.pos || classifyPos(n.latin, n.english)) === 'noun' && n.latin !== obj.latin);
-                const subj = subjPool.length > 0 ? subjPool[Math.floor(Math.random() * subjPool.length)] : { latin: 'puella', english: 'girl' };
-                return { verb, obj, subj };
+            // Try several pattern/vocab combinations before giving up, and
+            // remember what's already been produced this batch so the same
+            // sentence never appears twice in a row.
+            function makeFrom(patterns, seen) {
+                for (let attempt = 0; attempt < 25; attempt++) {
+                    const ctx = buildContext();
+                    if (!ctx) return null;
+                    const out = rand(patterns)(ctx);
+                    if (out && out.lat && out.eng && !seen.has(out.lat)) {
+                        seen.add(out.lat);
+                        // Sentences get a capital; short phrases stay lowercase
+                        // the way a vocab drill would normally show them.
+                        if (patterns === SENTENCE_PATTERNS) {
+                            out.lat = capitalise(out.lat);
+                            out.eng = capitalise(out.eng);
+                        }
+                        return out;
+                    }
+                }
+                return null;
             }
 
+            const seen = new Set();
+            // Draw without replacement so a short batch doesn't ask the same
+            // word twice — the old modulo/random picks repeated constantly.
+            const makeQueue = arr => { let q = shuffled(arr); return () => { if (!q.length) q = shuffled(arr); return q.pop(); }; };
+            const nextVocab = makeQueue(vocab);
+            const nextNominal = makeQueue(nouns.concat(adjectives).length ? nouns.concat(adjectives) : vocab);
+            const nextVerb = makeQueue(verbs.length ? verbs : vocab);
+            const ppPool = verbs.filter(vv => !parseAnkiVerbShorthand(vv.latin) && vv.latin.split(',').length >= 3);
+            const nextPP = ppPool.length ? makeQueue(ppPool) : null;
+            const gcBank = shuffled([
+                { form: 'navem', ans: 'Singular, Feminine, Accusative' },
+                { form: 'proelii', ans: 'Singular, Neuter, Genitive' },
+                { form: 'fluminum', ans: 'Plural, Neuter, Genitive' },
+                { form: 'senatui', ans: 'Singular, Masculine, Dative' },
+                { form: 'tempestatis', ans: 'Singular, Feminine, Genitive' },
+                { form: 'nautas', ans: 'Plural, Masculine, Accusative' },
+                { form: 'militibus', ans: 'Plural, Masculine, Dative or Ablative' },
+                { form: 'urbium', ans: 'Plural, Feminine, Genitive' },
+                { form: 'corpora', ans: 'Plural, Neuter, Nominative or Accusative' },
+                { form: 'manu', ans: 'Singular, Feminine, Ablative' },
+                { form: 'rei', ans: 'Singular, Feminine, Genitive or Dative' },
+                { form: 'ducem', ans: 'Singular, Masculine, Accusative' }
+            ]);
+            const mtvBank = shuffled([
+                { form: 'ambulabit', ans: 'Indicative, Future, Active' },
+                { form: 'laudata est', ans: 'Indicative, Perfect, Passive' },
+                { form: 'regeret', ans: 'Subjunctive, Imperfect, Active' },
+                { form: 'abstulit', ans: 'Indicative, Perfect, Active' },
+                { form: 'fac', ans: 'Imperative, Present, Active' },
+                { form: 'monuissem', ans: 'Subjunctive, Pluperfect, Active' },
+                { form: 'docebamur', ans: 'Indicative, Imperfect, Passive' },
+                { form: 'absit', ans: 'Subjunctive, Present, Active' },
+                { form: 'missum erat', ans: 'Indicative, Pluperfect, Passive' },
+                { form: 'audientur', ans: 'Indicative, Future, Passive' },
+                { form: 'portate', ans: 'Imperative, Present, Active' },
+                { form: 'ablatum erit', ans: 'Indicative, Future Perfect, Passive' },
+                { form: 'capiuntur', ans: 'Indicative, Present, Passive' },
+                { form: 'venissent', ans: 'Subjunctive, Pluperfect, Active' },
+                { form: 'hortatus est', ans: 'Indicative, Perfect, Active (deponent)' },
+                { form: 'duceremur', ans: 'Subjunctive, Imperfect, Passive' }
+            ]);
 
             for (let i = 0; i < count; i++) {
-                let v;
-                if (type === 'principalParts') {
-                    // Only quiz words that actually have principal parts to
-                    // give — the Anki-style "mitto mittere 3" shorthand has no
-                    // perfect/supine stored, so it can't be a fair question here.
-                    const withParts = vocab.filter(vv => (vv.pos || classifyPos(vv.latin, vv.english)) === 'verb' && !parseAnkiVerbShorthand(vv.latin) && vv.latin.split(',').length >= 3);
-                    v = withParts.length > 0 ? withParts[Math.floor(Math.random() * withParts.length)] : pickVocab('verb');
-                } else if (VERB_TYPES.includes(type)) v = pickVocab('verb');
-                else if (NOUN_TYPES.includes(type)) v = pickVocab('noun');
-                else v = vocab[Math.floor(Math.random() * vocab.length)];
                 let q = { type };
-                
+
                 switch(type) {
-                    case 'vocab':
-                        if (dir === 'latToEng') {
-                            q = { type: 'vocab', prompt: v.latin, target: v.english, extra: '' };
-                        } else {
-                            q = { type: 'vocab', prompt: v.english, target: v.latin, extra: '' };
-                        }
+                    case 'vocab': {
+                        const v = nextVocab();
+                        q = { type: 'vocab', prompt: dir === 'latToEng' ? v.latin : v.english,
+                              target: dir === 'latToEng' ? v.english : v.latin, extra: '' };
                         break;
+                    }
                     case 'latToEng':
-                        q.prompt = `${v.latin} in urbe habitat.`;
-                        q.target = `The ${v.english} lives in the city.`;
-                        break;
-                    case 'engToLat':
-                        q.prompt = `The ${v.english} lives in the city.`;
-                        q.target = `${v.latin} in urbe habitat`;
-                        break;
-                    case 'latSentence': {
-                        const pair = pickVerbCollocatePair();
-                        if (pair && Math.random() < 0.6) {
-                            const subjNom = pair.subj.latin.split(',')[0].trim();
-                            const objAcc = getDeclension(pair.obj.latin)[2];
-                            const verbForm = getActivePresent3sg(pair.verb.latin);
-                            const subjEn = pair.subj.english.split(/[,;]/)[0].trim();
-                            const objEn = pair.obj.english.split(/[,;]/)[0].trim();
-                            const verbEn = thirdPersonVerbForm(pair.verb.english);
-                            q.prompt = `${subjNom} ${objAcc} ${verbForm}.`;
-                            q.target = `The ${subjEn} ${verbEn} the ${objEn}.`;
-                            break;
-                        }
-                        const v2 = pickVocab('noun');
-                        const bank = [
-                            { lat: `${v.latin}, qui in urbe habitabat, ${v2.latin} vidit.`, eng: `The ${v.english}, who was living in the city, saw the ${v2.english}.` },
-                            { lat: `Cum ${v.latin} advenisset, cives laeti erant.`, eng: `When the ${v.english} had arrived, the citizens were happy.` },
-                            { lat: `${v.latin} a ${v2.latin} laudatus est.`, eng: `The ${v.english} was praised by the ${v2.english}.` },
-                            { lat: `Militibus in urbe pugnantibus, ${v.latin} fugit.`, eng: `With the soldiers fighting in the city, the ${v.english} fled.` },
-                            { lat: `Nemo dubitat quin ${v.latin} ${v2.latin} amet.`, eng: `No one doubts that the ${v.english} loves the ${v2.english}.` }
-                        ];
-                        const pick = bank[i % bank.length];
-                        q.prompt = pick.lat;
-                        q.target = pick.eng;
+                    case 'engToLat': {
+                        const made = makeFrom(PHRASE_PATTERNS, seen);
+                        if (!made) { q.prompt = 'in urbe'; q.target = 'in the city'; break; }
+                        q.prompt = type === 'latToEng' ? made.lat : made.eng;
+                        q.target = type === 'latToEng' ? made.eng : made.lat;
                         break;
                     }
+                    case 'latSentence':
                     case 'engSentence': {
-                        const pair = pickVerbCollocatePair();
-                        if (pair && Math.random() < 0.6) {
-                            const subjNom = pair.subj.latin.split(',')[0].trim();
-                            const objAcc = getDeclension(pair.obj.latin)[2];
-                            const verbForm = getActivePresent3sg(pair.verb.latin);
-                            const subjEn = pair.subj.english.split(/[,;]/)[0].trim();
-                            const objEn = pair.obj.english.split(/[,;]/)[0].trim();
-                            const verbEn = thirdPersonVerbForm(pair.verb.english);
-                            q.prompt = `The ${subjEn} ${verbEn} the ${objEn}.`;
-                            q.target = `${subjNom} ${objAcc} ${verbForm}`;
-                            break;
-                        }
-                        const v2 = pickVocab('noun');
-                        const bank = [
-                            { eng: `The ${v.english}, having been warned by the ${v2.english}, did not delay.`, lat: `${v.latin}, a ${v2.latin} monitus, non cunctatus est` },
-                            { eng: `Although the ${v.english} was brave, he feared the ${v2.english}.`, lat: `quamquam ${v.latin} fortis erat, ${v2.latin} timuit` },
-                            { eng: `The ${v.english} will be sent to the city by the ${v2.english}.`, lat: `${v.latin} ab ${v2.latin} in urbem mittetur` },
-                            { eng: `We do not know where the ${v.english} carried the ${v2.english}.`, lat: `nescimus ubi ${v.latin} ${v2.latin} portaverit` },
-                            { eng: `The ${v.english} having been captured, the citizens rejoiced.`, lat: `${v.latin} capto, cives gavisi sunt` }
-                        ];
-                        const pick = bank[i % bank.length];
-                        q.prompt = pick.eng;
-                        q.target = pick.lat;
+                        const made = makeFrom(SENTENCE_PATTERNS, seen);
+                        if (!made) { q.prompt = 'nuntius epistulam mittit.'; q.target = 'The messenger sends the letter.'; break; }
+                        q.prompt = type === 'latSentence' ? made.lat : made.eng;
+                        q.target = type === 'latSentence' ? made.eng : made.lat;
                         break;
                     }
-                    case 'declining':
+                    case 'declining': {
+                        const v = nextNominal();
                         const forms = getDeclension(v.latin);
-                        q.prompt = `Decline: ${v.latin}`;
+                        const isAdj = (v.pos || classifyPos(v.latin, v.english)) === 'adjective';
+                        q.prompt = `Decline (${isAdj ? 'masculine singular' : 'singular'}): ${v.latin}`;
                         q.target = `Nom. ${forms[0]}, Voc. ${forms[1]}, Acc. ${forms[2]}, Gen. ${forms[3]}, Dat. ${forms[4]}, Abl. ${forms[5]}`;
                         break;
-                    case 'conjugation':
-                        const conjForms = getConjugation(v.latin);
-                        q.prompt = `Conjugate (passive present): ${v.latin}`;
-                        q.target = `1st: ${conjForms[0]}, 2nd: ${conjForms[1]}, 3rd: ${conjForms[2]}, 1st pl: ${conjForms[3]}, 2nd pl: ${conjForms[4]}, 3rd pl: ${conjForms[5]}`;
+                    }
+                    case 'conjugation': {
+                        const v = nextVerb();
+                        const f = getConjugation(v.latin);
+                        q.prompt = `Conjugate (present passive): ${v.latin}`;
+                        q.target = `1st: ${f[0]}, 2nd: ${f[1]}, 3rd: ${f[2]}, 1st pl: ${f[3]}, 2nd pl: ${f[4]}, 3rd pl: ${f[5]}`;
                         break;
+                    }
                     case 'genderCase': {
-                        // Deriving number/gender/case for an arbitrary noun form
-                        // needs real morphology, not a guess — these are real
-                        // forms (from your own test) with correct answers,
-                        // rotating through so it's not always the same one.
-                        const bank = [
-                            { form: 'navem', ans: 'Singular, Feminine, Accusative' },
-                            { form: 'proelii', ans: 'Singular, Neuter, Genitive' },
-                            { form: 'fluminum', ans: 'Plural, Neuter, Genitive' },
-                            { form: 'senatui', ans: 'Singular, Masculine, Dative' },
-                            { form: 'nunti', ans: 'Singular, Masculine, Genitive' },
-                            { form: 'tempestatis', ans: 'Singular, Feminine, Genitive' },
-                            { form: 'nautas', ans: 'Plural, Masculine, Accusative' }
-                        ];
-                        const pick = bank[i % bank.length];
+                        const pick = gcBank[i % gcBank.length];
                         q.prompt = `What is the number, gender, and case of "${pick.form}"?`;
                         q.target = pick.ans;
                         break;
                     }
                     case 'principalParts': {
-                        // Vocab already stores full principal parts as v.latin
-                        // (e.g. "amo, amare, amavi, amatum") — quiz on just the
-                        // first form, and the correct answer is simply what's
-                        // already stored, not a regex-guessed reconstruction.
-                        const firstForm = v.latin.split(',')[0].trim();
-                        q.prompt = `Give principal parts for: ${firstForm}`;
+                        if (!nextPP) {
+                            q.prompt = 'Give the principal parts of: mitto';
+                            q.target = 'mitto, mittere, misi, missum';
+                            q.extra = 'No verbs with full principal parts in your corpus yet — add some in Materials.';
+                            break;
+                        }
+                        const v = nextPP();
+                        q.prompt = `Give the principal parts of: ${headword(v.latin)}`;
                         q.target = v.latin;
                         break;
                     }
                     case 'moodTenseVoice': {
-                        const bank = [
-                            { form: 'ambulabit', ans: 'Indicative, Future, Active' },
-                            { form: 'laudata est', ans: 'Indicative, Perfect, Passive' },
-                            { form: 'regeret', ans: 'Subjunctive, Imperfect, Active' },
-                            { form: 'abstulit', ans: 'Indicative, Perfect, Active' },
-                            { form: 'fac', ans: 'Imperative, Present, Active' },
-                            { form: 'monuissem', ans: 'Subjunctive, Pluperfect, Active' },
-                            { form: 'docebamur', ans: 'Indicative, Imperfect, Passive' },
-                            { form: 'absit', ans: 'Subjunctive, Present, Active' },
-                            { form: 'missum erat', ans: 'Indicative, Pluperfect, Passive' },
-                            { form: 'audientur', ans: 'Indicative, Future, Passive' },
-                            { form: 'portate', ans: 'Imperative, Present, Active' },
-                            { form: 'ablatum erit', ans: 'Indicative, Future Perfect, Passive' }
-                        ];
-                        const pick = bank[i % bank.length];
+                        const pick = mtvBank[i % mtvBank.length];
                         q.prompt = `Identify mood, tense, and voice: "${pick.form}"`;
                         q.target = pick.ans;
                         break;
                     }
-                    case 'unseen':
-                        q.prompt = `Read: ${v.latin} ad urbem ambulavit. Quid fecit?`;
-                        q.target = `He/she walked to the city.`;
+                    case 'unseen': {
+                        const lines = [];
+                        for (let k = 0; k < 3; k++) {
+                            const made = makeFrom(SENTENCE_PATTERNS, seen);
+                            if (made) lines.push(made);
+                        }
+                        if (lines.length === 0) {
+                            q.prompt = 'nuntius epistulam mittit. cives epistulam legunt.';
+                            q.target = 'The messenger sends the letter. The citizens read the letter.';
+                            break;
+                        }
+                        q.prompt = lines.map(l => l.lat).join(' ');
+                        q.target = lines.map(l => l.eng).join(' ');
                         break;
+                    }
+                    default: {
+                        const made = makeFrom(SENTENCE_PATTERNS, seen);
+                        q.prompt = made ? made.lat : 'nuntius epistulam mittit.';
+                        q.target = made ? made.eng : 'The messenger sends the letter.';
+                    }
                 }
                 q.source = 'fallback';
                 questions.push(q);
@@ -2125,7 +2430,7 @@ Answer their specific question clearly and directly, like a teacher explaining a
 
             if (userAns === '') {
                 isCorrect = false;
-            } else if (state.settings.apiKey && state.settings.apiUrl) {
+            } else if (aiConfigured()) {
                 // Let the AI make the actual correctness call, not just add
                 // commentary after a rigid string-match — translation questions
                 // in particular have many valid phrasings that exact-match would
@@ -2221,27 +2526,48 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
             }
         }
 
+        // Top up the question queue in the background well before it runs
+        // out, so pressing Next never sits on a blank screen waiting for a
+        // generation call (which on a local model can take 30s+).
+        let prefetching = false;
+        async function prefetchMore() {
+            if (prefetching || !state.quiz.isInfinite) return;
+            prefetching = true;
+            try {
+                const type = state.quiz.type;
+                const more = await generateQuestions(type, state.settings.batchSize || 5);
+                if (state.quiz.isInfinite && state.quiz.type === type) {
+                    state.quiz.questions.push(...more);
+                    saveState();
+                    // If the user is already sitting on the loading screen
+                    // waiting, show the newly arrived question now.
+                    if (!state.quiz.questions[state.quiz.index - 1] || state.quiz.index >= state.quiz.questions.length - more.length) render();
+                }
+            } catch(e) { console.warn('Prefetch failed', e); }
+            prefetching = false;
+        }
+
         async function nextQuestion() {
             state.quiz.index++;
             state.quiz.answered = false;
-            
-            if (state.quiz.isInfinite && state.quiz.index >= state.quiz.questions.length - 1) {
-                const more = await generateQuestions(state.quiz.type, 5);
-                state.quiz.questions.push(...more);
+
+            // Kick off a top-up two questions before the end, without awaiting.
+            if (state.quiz.isInfinite && state.quiz.index >= state.quiz.questions.length - 2) {
+                prefetchMore();
             }
-            
-            if (!state.quiz.isInfinite && state.quiz.index >= state.quiz.questions.length) {
-                if (state.dailyLauncher.active) {
-                    finishDailyCategory();
-                } else {
-                    const correct = state.quiz.results.filter(r => r.correct).length;
-                    const total = state.quiz.results.length;
-                    alert(`Session complete! ${correct}/${total} correct.`);
-                    navigateTo('home');
+
+            if (state.quiz.index >= state.quiz.questions.length) {
+                if (state.quiz.isInfinite) {
+                    render(); // spinner; prefetchMore() will re-render on arrival
+                    return;
                 }
+                const correct = state.quiz.results.filter(r => r.correct).length;
+                const total = state.quiz.results.length;
+                alert(`Session complete! ${correct}/${total} correct.`);
+                navigateTo('home');
                 return;
             }
-            
+
             render();
         }
 
