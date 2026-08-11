@@ -129,7 +129,7 @@
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
-            practice: { focusTopic: '' }
+            practice: { focusTopic: '', usedExamples: [] }
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -584,7 +584,9 @@
                 <div class="bg-white rounded-3xl p-8 sm:p-12 shadow-xl border border-stone-100 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden">
                     <div class="flex items-center gap-2">
                         <span class="bg-sage-100 text-sage-800 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-sage-200 inline-block">${badge}</span>
-                        ${q.source === 'fallback'
+                        ${q.source === 'past-paper'
+                            ? '<span class="text-[10px] text-sage-700 bg-sage-50 border border-sage-200 rounded-full px-2 py-0.5 uppercase tracking-widest" title="This is a real sentence from one of your own tests, not a generated one.">from your tests</span>'
+                            : q.source === 'fallback'
                             ? `<span class="text-[10px] text-terracotta-600 uppercase tracking-widest cursor-help" title="${aiConfigured() ? ('The AI call failed, so this was built offline. ' + (lastAiError || 'Check the browser console.')).replace(/"/g, '&quot;') : 'No AI connection set up, so this was built offline.'}">offline${aiConfigured() ? ' — AI call failed' : ''}</span>`
                             : (q.source === 'ai' ? `<span class="text-[10px] text-stone-400 uppercase tracking-widest" title="Which connection generated this question">${q.provider || 'AI'}</span>` : '')}
                     </div>
@@ -2162,6 +2164,36 @@ ${rawText.substring(0, 6000)}
             return word + 's';
         }
 
+        // The style examples are real, teacher-written, already-correct
+        // sentences. Serving some of them verbatim guarantees a slice of every
+        // session is exactly the target quality, instead of everything being
+        // an imitation of it.
+        function parseStylePairs() {
+            return String(state.materials.styleExamples || '').split('\n')
+                .map(l => l.trim())
+                .filter(l => l && !l.startsWith('#') && !l.startsWith('---') && l.includes('='))
+                .map(l => {
+                    const i = l.indexOf('=');
+                    let lat = l.slice(0, i).trim(), eng = l.slice(i + 1).trim();
+                    // Tolerate a file written the other way round.
+                    if (looksEnglish(lat) && !looksEnglish(eng)) { const t = lat; lat = eng; eng = t; }
+                    return { lat, eng };
+                })
+                .filter(p => p.lat && p.eng && p.lat.split(/\s+/).length >= 3);
+        }
+
+        // Serve unseen examples first; once they've all been used, start the
+        // rotation again rather than running dry.
+        function takeUnusedPairs(pairs, n) {
+            if (n <= 0 || pairs.length === 0) return [];
+            const used = new Set(state.practice.usedExamples || []);
+            let pool = pairs.filter(p => !used.has(p.lat));
+            if (pool.length < n) { state.practice.usedExamples = []; pool = pairs; }
+            const picked = shuffled(pool).slice(0, n);
+            state.practice.usedExamples = [...(state.practice.usedExamples || []), ...picked.map(p => p.lat)].slice(-500);
+            return picked;
+        }
+
         async function generateQuestions(type, count) {
             // Copy, don't alias: the old code pushed placeholder words straight
             // into state.materials.vocabList when the list was empty, which
@@ -2183,6 +2215,28 @@ ${rawText.substring(0, 6000)}
             // vocab/declining/conjugation/principalParts stay local on purpose:
             // they must quiz the student's own list, not words an AI invents.
             const LOCAL_ONLY = ['vocab', 'declining', 'conjugation', 'principalParts'];
+            const SENTENCE_TYPES = ['latSentence', 'engSentence', 'unseen'];
+
+            // Roughly one in three sentence questions is a genuine past-paper
+            // sentence rather than a generated one.
+            const realQuestions = [];
+            if (SENTENCE_TYPES.includes(type) && type !== 'unseen') {
+                const pairs = parseStylePairs();
+                const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
+                takeUnusedPairs(pairs, want).forEach(p => {
+                    realQuestions.push({
+                        type,
+                        prompt: type === 'latSentence' ? p.lat : p.eng,
+                        target: type === 'latSentence' ? p.eng : p.lat,
+                        extra: '',
+                        source: 'past-paper'
+                    });
+                });
+            }
+            const aiCount = Math.max(0, count - realQuestions.length);
+
+            if (aiCount === 0 && realQuestions.length > 0) return shuffled(realQuestions);
+
             if (aiConfigured() && !LOCAL_ONLY.includes(type)) {
                 try {
                     // Sample randomly rather than always slicing from the top.
@@ -2191,11 +2245,15 @@ ${rawText.substring(0, 6000)}
                     // the same handful of words and the same three or four
                     // model sentences — which is most of why everything came
                     // out sounding the same.
-                    const sample = (arr, n) => shuffled(arr).slice(0, n);
+                    // Sending only 30 of each meant the model regularly needed a
+                    // word it hadn't been given and simply invented one — which
+                    // is why unfamiliar verbs kept appearing. Send far more, and
+                    // make the list binding rather than a suggestion.
+                    const sample = (arr, n) => arr.length <= n ? shuffled(arr) : shuffled(arr).slice(0, n);
                     const summaryParts = [];
-                    if (nouns.length) summaryParts.push(`Nouns: ${sample(nouns, 30).map(v => `${v.latin} (${v.english})`).join('; ')}`);
-                    if (adjectives.length) summaryParts.push(`Adjectives: ${sample(adjectives, 15).map(v => `${v.latin} (${v.english})`).join('; ')}`);
-                    if (verbs.length) summaryParts.push(`Verbs (principal parts given — conjugate as the sentence needs; never paste the dictionary listing into a sentence): ${sample(verbs, 30).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (nouns.length) summaryParts.push(`NOUNS: ${sample(nouns, 120).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (adjectives.length) summaryParts.push(`ADJECTIVES: ${sample(adjectives, 60).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (verbs.length) summaryParts.push(`VERBS (principal parts given — conjugate as the sentence needs; never paste a dictionary listing into a sentence): ${sample(verbs, 120).map(v => `${v.latin} (${v.english})`).join('; ')}`);
                     const vocabSummary = summaryParts.join('\n');
 
                     const grammarContext = state.materials.grammarNotes
@@ -2210,16 +2268,28 @@ ${rawText.substring(0, 6000)}
                     // model to "match a style" produces the mean of the style;
                     // asking it to reuse a specific grammatical shape with new
                     // content produces sentences like the real ones.
+                    // Letting the model choose its own skeletons meant it kept
+                    // choosing the same kind — purpose clauses dominate the
+                    // examples, so that's what it gravitated to. Assigning one
+                    // specific skeleton per question number forces the spread
+                    // instead of hoping for it.
                     let styleContext = '';
-                    const SENTENCE_TYPES = ['latSentence', 'engSentence', 'unseen'];
-                    if (state.materials.styleExamples) {
-                        const lines = state.materials.styleExamples.split('\n').map(l => l.trim())
-                            .filter(l => l && !l.startsWith('#') && !l.startsWith('---') && /[=]/.test(l));
-                        const picked = shuffled(lines).slice(0, SENTENCE_TYPES.includes(type) ? 30 : 12);
-                        if (picked.length) {
-                            styleContext = SENTENCE_TYPES.includes(type)
-                                ? `\n\nSKELETONS — every one of these is a real sentence set by this student's own teacher. For each question you write, silently pick ONE of them, keep its grammatical shape (its clause structure, its tense sequence, its construction), and write a COMPLETELY DIFFERENT sentence with new people, new vocabulary and a new situation. Never reproduce one of these or merely swap a single word.\n${picked.join('\n')}`
-                                : `\n\nReal examples from this student's tests, for register and difficulty:\n${picked.join('\n')}`;
+                    let assignedSkeletons = [];
+                    const allPairs = parseStylePairs();
+                    if (allPairs.length) {
+                        if (SENTENCE_TYPES.includes(type)) {
+                            const pool = shuffled(allPairs);
+                            for (let i = 0; i < aiCount; i++) assignedSkeletons.push(pool[i % pool.length]);
+                            // A wider reference pool so the vocabulary rule below
+                            // has enough vetted words to draw on.
+                            const reference = shuffled(allPairs).slice(0, 30);
+                            styleContext = `\n\nSKELETONS — each of these is a real sentence set by this student's own teacher, and they are ASSIGNED, one per question. Question N must reuse the grammatical shape of skeleton N: the same clause structure, the same construction, the same sequence of tenses. Everything else must change — new people, new vocabulary, a new situation. Never reproduce a skeleton or merely swap one word out of it.
+${assignedSkeletons.map((p, i) => `${i + 1}. ${p.lat} = ${p.eng}`).join('\n')}
+
+FURTHER REAL EXAMPLES — not assigned, but their vocabulary is approved for use:
+${reference.map(p => p.lat).join('\n')}`;
+                        } else {
+                            styleContext = `\n\nReal examples from this student's tests, for register and difficulty:\n${shuffled(allPairs).slice(0, 12).map(p => `${p.lat} = ${p.eng}`).join('\n')}`;
                         }
                     }
 
@@ -2291,13 +2361,17 @@ PEOPLE: build each sentence around named people or specific roles, not abstract 
 INGREDIENTS: every sentence must contain AT LEAST TWO of the following, and across the batch all six should appear somewhere:
 ${shuffled(INGREDIENTS).map(x => '- ' + x).join('\n')}
 SITUATION: each sentence must describe a plausible situation someone could picture — a siege, a letter, a lesson, a journey, an illness, a trial, a betrayal, a market, a storm at sea. Reject anything that reads as a grammar exercise about nothing.
-BANNED: "<person> lives in the city", "the messenger sends the letter", "the X sees the Y" with no further content, and any sentence whose only content is subject + verb + object.` : '';
+BANNED: "<person> lives in the city", "the messenger sends the letter", "the X sees the Y" with no further content, and any sentence whose only content is subject + verb + object.
 
-                    const varietyInstruction = `\nVariety is the priority. Across these ${count} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
+VOCABULARY IS CLOSED. Every verb, noun and adjective must come from either (a) the vocabulary lists below, or (b) a sentence in the SKELETONS or FURTHER REAL EXAMPLES sections. Proper names (Caesar, Quintus, Melissa, Roma, Gallia...) and ordinary function words (et, sed, in, ad, cum, ne, ut, non, qui, hic, ille, ipse, idem, suus, is, se, omnis, multus, and forms of sum/possum) are always allowed. If a sentence you want to write needs a word you have not been given, you must rewrite the sentence using words you have. A word this student has never met makes the question useless to him, so this rule outranks elegance.
+
+BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case of every noun, the agreement of every adjective and participle, and the mood and tense of every verb in a subordinate clause. Check that each sentence describes something a person could picture. Fix anything wrong, and if you cannot fix it, replace the sentence with a simpler one you are certain of.` : '';
+
+                    const varietyInstruction = `\nVariety is the priority. Across these ${aiCount} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
 
                     const prompt = `You are setting practice questions for a Year 10 / VCE Latin student, working from the Oxford Latin Course. Your sentences must be indistinguishable from ones this student's own teacher would set — the SKELETONS below are real examples of that teacher's work, and matching them is the whole job.
 
-Write ${count} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
+Write ${aiCount} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
 
 ACCURACY: every Latin sentence must be genuinely grammatical — correct case for every noun, correct agreement for every adjective and participle, correct sequence of tenses in subordinate clauses. Use the student's vocabulary below where it fits, but never paste a dictionary listing (e.g. "mitto, mittere, misi, missum") into a sentence; inflect it. If you are not certain a form is right, use a construction you are certain of instead.
 ${vocabSummary}${grammarContext}${styleContext}${focusContext}
@@ -2317,7 +2391,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                             if (englishFirst && !looksEnglish(p) && looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
                             return { ...qq, type, prompt: p, target: t, source: 'ai', provider: lastUsedProfileName };
                         });
-                        if (valid.length > 0) return valid;
+                        if (valid.length > 0) return shuffled([...realQuestions, ...valid]);
                         console.warn('AI returned questions but none were usable:', parsed);
                     }
                 } catch(e) {
@@ -2399,6 +2473,9 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             }
 
             const seen = new Set();
+            // Real past-paper sentences are still worth serving when the AI is
+            // unavailable — they need no generation at all.
+            const offlineNeeded = Math.max(0, count - realQuestions.length);
             // Draw without replacement so a short batch doesn't ask the same
             // word twice — the old modulo/random picks repeated constantly.
             const makeQueue = arr => { let q = shuffled(arr); return () => { if (!q.length) q = shuffled(arr); return q.pop(); }; };
@@ -2440,7 +2517,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                 { form: 'duceremur', ans: 'Subjunctive, Imperfect, Passive' }
             ]);
 
-            for (let i = 0; i < count; i++) {
+            for (let i = 0; i < (SENTENCE_TYPES.includes(type) ? offlineNeeded : count); i++) {
                 let q = { type };
 
                 switch(type) {
@@ -2529,7 +2606,7 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                 q.source = 'fallback';
                 questions.push(q);
             }
-            return questions;
+            return shuffled([...realQuestions, ...questions]);
         }
 
         function attachKeybinds() {
