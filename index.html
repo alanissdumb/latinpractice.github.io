@@ -242,6 +242,120 @@
         // with no principal parts at all, e.g. "mitto mittere 3" or "capio capere 3i"
         // (io = 3rd-io). Recognizing this explicitly is far more reliable than
         // guessing conjugation from spelling, since the number IS the conjugation.
+        // Real Anki decks write dictionary forms with SPACES and gender
+        // markers ("leo leonis m", "mitto mittere misi missus", "civis civis
+        // -ium m", "porto 1"), not the neat comma form the rest of this app
+        // assumed. Left unhandled, an entire verb deck parses as nouns still
+        // in English-first order, and the AI gets almost no verbs to work
+        // with — which is why it kept inventing them. This normalises every
+        // shape seen in the wild into the canonical comma form before
+        // anything else touches it.
+
+        const GENDER_TOK = /^[mfnc]$/i;
+        const ISTEM_TOK = /^-?ium$/i;
+        const GOVCASE_TOK = /^\+(dat|acc|abl|gen)\.?$/i;
+        const CONJ_TOK = /^([1-4])(io)?$/i;
+        const INFINITIVE_END = /(are|ere|ire|ari|eri|iri)$/i;
+
+        // Splits on commas OR whitespace, then pulls out the grammar markers.
+        function stripLatinMarkers(str) {
+            const raw = String(str || '').replace(/[\[\(][^\])]*[\])]/g, ' ').split(/[,;]|\s+/).map(t => t.trim()).filter(Boolean);
+            const out = { parts: [], gender: null, istem: false, govCase: null, conj: null, isIo: false };
+            raw.forEach(t => {
+                if (GOVCASE_TOK.test(t)) { out.govCase = t.replace(/[+.]/g, '').toLowerCase(); return; }
+                if (ISTEM_TOK.test(t)) { out.istem = true; return; }
+                const c = t.match(CONJ_TOK);
+                // Only a real conjugation marker if it follows a Latin 1st
+                // person singular ("porto 1"); otherwise it's the deck's own
+                // disambiguating number ("order 2") and must not count.
+                if (c && out.parts.length > 0 && /o$/i.test(out.parts[0])) { out.conj = c[1]; out.isIo = !!c[2]; return; }
+                if (c && out.parts.length > 0) return; // trailing tag, drop it
+                // A lone m/f/n is a gender marker, but only after the first
+                // token — otherwise a real word could be eaten.
+                if (GENDER_TOK.test(t) && out.parts.length > 0) { out.gender = t.toLowerCase(); return; }
+                out.parts.push(t);
+            });
+            return out;
+        }
+
+        // Does this side look like the Latin one? Endings are far more
+        // reliable here than function words, since dictionary entries have
+        // almost no function words in them.
+        function latinScore(str) {
+            const info = stripLatinMarkers(str);
+            let score = 0;
+            if (info.gender || info.istem || info.govCase || info.conj) score += 3;
+            info.parts.forEach(t => {
+                if (INFINITIVE_END.test(t)) score += 2;
+                if (/(ae|orum|arum|ibus|issimus|errimus|ior|ius|tus|sus|ctus|ptus|ntis|onis|inis|itis|oris|eris|uris)$/i.test(t)) score += 1;
+                if (/^(sum|esse|fui|eo|ire|fero|ferre|tuli|latus)$/i.test(t)) score += 2;
+            });
+            if (looksEnglish(str)) score -= 3;
+            return score;
+        }
+
+        // Build "porto, portare" from the shorthand "porto 1".
+        function infinitiveFromConj(first, conj, isIo) {
+            const stem = first.replace(/o$/i, '');
+            if (conj === '1') return stem + 'are';
+            if (conj === '2') return stem + 're';
+            if (conj === '4') return stem.replace(/i$/i, '') + 'ire';
+            return stem.replace(/i$/i, '') + 'ere';
+        }
+
+        // Returns { latin, english, pos } in canonical form.
+        function normalizeVocabEntry(sideA, sideB) {
+            let lat = String(sideA || '').trim(), eng = String(sideB || '').trim();
+            if (latinScore(eng) > latinScore(lat)) { const t = lat; lat = eng; eng = t; }
+
+            const info = stripLatinMarkers(lat);
+            const parts = info.parts;
+            const engClean = eng.replace(/\s*\(\d+\)\s*$/, '').replace(/\s*\d+\s*$/, '').trim();
+            if (parts.length === 0) return null;
+
+            // "sollicitus-a-um" arrives as one token — the endings are
+            // markers, not part of the word.
+            if (parts.length && parts[0].includes('-')) parts[0] = parts[0].split('-')[0];
+            const first = parts[0];
+            let pos = null;
+
+            // --- verb ---
+            const hasInfinitive = parts.length > 1 && parts.slice(1).some(p => INFINITIVE_END.test(p));
+            const irregular = /^(sum|possum|eo|fero|volo|nolo|malo|fio|inquam)$/i.test(first) && parts.length > 1;
+            if (info.conj || hasInfinitive || irregular || /^(to|i)\s/i.test(eng)) {
+                pos = 'verb';
+                let vparts = parts.slice();
+                if (info.conj && vparts.length === 1) vparts = [first, infinitiveFromConj(first, info.conj, info.isIo)];
+                return { latin: vparts.join(', '), english: engClean, pos, govCase: info.govCase };
+            }
+
+            // --- adjective ---
+            // "sollicitus-a-um", "bonus, -a, -um", "nullus nulla nullum",
+            // and comparisons like "malus, peior, pessimus".
+            const hyphenAdj = /-(a|ae)-(um|a)$/i.test(lat.replace(/\s/g, '')) || parts.slice(1).some(p => /^-/.test(p));
+            const triadAdj = parts.length === 3 && /us$/i.test(first) &&
+                /^(a|ae)$/i.test(parts[1].replace(/^-/, '')) === false &&
+                (/(ior|ius)$/i.test(parts[1]) || /^(a|um)$/i.test(parts[1])) ;
+            const comparison = parts.length === 3 && /(ior|ius)$/i.test(parts[1]) && /(issimus|errimus|illimus|imus)$/i.test(parts[2]);
+            const threeGender = parts.length === 3 && /us$/i.test(first) && /a$/i.test(parts[1]) && /um$/i.test(parts[2]);
+            if (hyphenAdj || comparison || threeGender) {
+                // Only 1st/2nd declension adjectives take -a, -um. A 3rd
+                // declension one (fortis, ferox, dives) must not be given
+                // endings it doesn't have.
+                return { latin: /us$/i.test(first) || /er$/i.test(first) ? first + ', -a, -um' : first,
+                         english: engClean, pos: 'adjective' };
+            }
+            // Single-form 3rd declension adjective given with its genitive
+            // ("ferox ferocis") or alone ("fortis"), identified by its gloss.
+            if (ADJECTIVE_GLOSSES.has(gloss(engClean).toLowerCase())) {
+                return { latin: parts.slice(0, 2).join(', '), english: engClean, pos: 'adjective' };
+            }
+
+            // --- noun ---
+            return { latin: parts.slice(0, 2).join(', '), english: engClean, pos: 'noun',
+                     gender: info.gender, istem: info.istem };
+        }
+
         function parseAnkiVerbShorthand(latin) {
             const m = latin.trim().match(/^(\S+)\s+(\S+)\s+([1-4])(i(?:o)?)?$/i);
             if (!m) return null;
@@ -270,7 +384,11 @@
             'easy','new','old','young','ancient','beautiful','ugly','rich','poor','wise','foolish','stupid',
             'clever','holy','sacred','famous','unknown','true','false','faithful','wicked','wretched','miserable',
             'quick','swift','slow','many','few','whole','entire','same','other','similar','different','sick',
-            'ill','healthy','dead','alive','empty','full','clean','dirty','bright','dark','cold','hot','warm']);
+            'ill','healthy','dead','alive','empty','full','clean','dirty','bright','dark','cold','hot','warm',
+            // Numerals behave as adjectives in a sentence, so they must not
+            // land in the noun pool — "the three walked into the forest".
+            'one','two','three','four','five','six','seven','eight','nine','ten',
+            'first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth']);
 
         // Splits a vocab line into [latin, english]. Prefers a hyphen/equals/colon
         // surrounded by whitespace as the actual field separator — a bare,
@@ -339,6 +457,11 @@
             state.materials.vocabList = [];
             lines.forEach(line => {
                 if (!line.trim()) return;
+                // Comment and separator lines. Without this, a heading like
+                // "# Numbers 1-10" is read as a vocab pair on its dash and
+                // lands in the corpus as a fake word.
+                const t = line.trim();
+                if (t.startsWith('#') || t.startsWith('//') || /^[-=_*]{3,}$/.test(t) || /^---/.test(t)) return;
                 const split = splitVocabLine(line);
                 if (!split) return;
                 let [latin, english] = split;
@@ -346,15 +469,17 @@
                 // onto a word (e.g. "neco 1" from a superscript reference marker)
                 // — but NOT when it's actually the Anki verb-shorthand conjugation
                 // number (e.g. "mitto mittere 3"), which needs to stay intact.
-                if (!parseAnkiVerbShorthand(latin)) latin = latin.replace(/\s+\d{1,2}$/, '').trim();
-                english = english.replace(/\s+\d{1,2}$/, '').trim();
-                if (state.materials.forceSwap) {
-                    [latin, english] = [english, latin];
-                } else if (looksEnglish(latin) && !looksEnglish(english)) {
-                    [latin, english] = [english, latin];
-                }
+                if (state.materials.forceSwap) [latin, english] = [english, latin];
+                // One normaliser now handles direction, marker stripping and
+                // part-of-speech together, because they depend on each other:
+                // you can't tell which side is Latin without reading the
+                // endings, and you can't read the endings without stripping
+                // the gender/conjugation markers first.
+                const norm = normalizeVocabEntry(latin, english);
+                if (norm) { latin = norm.latin; english = norm.english; }
                 if (latin && english) {
-                    const entry = { latin, english, pos: classifyPos(latin, english), id: Date.now() + Math.random() };
+                    const entry = { latin, english, pos: (norm && norm.pos) || classifyPos(latin, english), id: Date.now() + Math.random() };
+                    if (norm && norm.govCase) entry.govCase = norm.govCase;
                     // Apply any prior AI enrichment (semantic category, word
                     // associations) for this exact headword, so it survives
                     // vocabList being rebuilt from scratch on every parse.
@@ -2309,9 +2434,13 @@ Return ONLY JSON. Include an entry for every item that needs changing; omit item
                     // make the list binding rather than a suggestion.
                     const sample = (arr, n) => arr.length <= n ? shuffled(arr) : shuffled(arr).slice(0, n);
                     const summaryParts = [];
-                    if (nouns.length) summaryParts.push(`NOUNS: ${sample(nouns, 120).map(v => `${v.latin} (${v.english})`).join('; ')}`);
-                    if (adjectives.length) summaryParts.push(`ADJECTIVES: ${sample(adjectives, 60).map(v => `${v.latin} (${v.english})`).join('; ')}`);
-                    if (verbs.length) summaryParts.push(`VERBS (principal parts given — conjugate as the sentence needs; never paste a dictionary listing into a sentence): ${sample(verbs, 120).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    // A local model chokes on a very long prompt, so cap lower
+                    // there; a hosted model can take the whole corpus, and the
+                    // more of it it sees the less it needs to invent words.
+                    const big = !isLocalUrl(state.settings.apiUrl);
+                    if (nouns.length) summaryParts.push(`NOUNS: ${sample(nouns, big ? 320 : 100).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (adjectives.length) summaryParts.push(`ADJECTIVES: ${sample(adjectives, big ? 140 : 50).map(v => `${v.latin} (${v.english})`).join('; ')}`);
+                    if (verbs.length) summaryParts.push(`VERBS (principal parts given — conjugate as the sentence needs; never paste a dictionary listing into a sentence): ${sample(verbs, big ? 220 : 100).map(v => `${v.latin} (${v.english})`).join('; ')}`);
                     const vocabSummary = summaryParts.join('\n');
 
                     const grammarContext = state.materials.grammarNotes
@@ -2431,7 +2560,38 @@ ${reference.map(p => p.lat).join('\n')}`;
                         'a named person from the cast, addressed or acting'
                     ];
 
-                    const styleRules = SENTENCE_TYPES.includes(type) ? `
+                    // Naming people isn't the same as knowing who they are. The
+                    // model had no idea Caesar goes with the Tenth Legion, that
+                    // Argus is Quintus's dog, or that Cicero's opponent is
+                    // Catiline — so it produced grammatically fine sentences
+                    // about nobody in particular. This supplies the world the
+                    // course actually takes place in, which is what makes the
+                    // teacher's own sentences feel like they're about something.
+                    const WORLD = `
+THE WORLD THESE SENTENCES LIVE IN — use these connections; they are what make a sentence feel real rather than generated.
+
+The Oxford Latin Course family (most sentences involve them):
+- Quintus: the boy the course follows, son of Flaccus and Scintilla, from Venusia in Apulia; later a student in Rome and Athens.
+- Flaccus: his father, a farmer (colonus), poor and hard-working. Scintilla: his mother. Horatia: his sister.
+- Argus: the family dog. Quintus and Horatia take him to the fields and lose him in the woods.
+- Marcus and Sextus: Quintus's friends and fellow students; Marcus's father is a senator.
+- Melissa: a Greek slave girl Quintus loves; letters, gifts and a wedding involve her.
+- Decimus, Gaius, Publius: neighbours and schoolfellows. The magister teaches them in a ludus; they are discipuli.
+
+Roman history the course covers:
+- Caesar: general in Gaul (Gallia) against the Gauls (Galli) and Vercingetorix; commands the LEGIO DECIMA (the Tenth Legion), his favourite; crosses the Rubicon; is stabbed in the senate on the Ides of March by Brutus and Cassius. Artemidorus tried to warn him with a letter.
+- Cicero: consul and the greatest orator; delivers orationes in the senate AGAINST CATILINE, who plots a conspiracy to burn Rome; Catiline flees the senate and dies in battle.
+- Hannibal: the Carthaginian general who crosses the ALPS with elephants into Italy, wins at Cannae, is finally beaten; Carthago is Rome's enemy.
+- Augustus: the first emperor, after Caesar's death. Brutus and Cassius fight and lose at Philippi.
+- Alexander: crosses mountains by night, conquers with a huge exercitus.
+
+Places and what happens in them: Roma (the forum, the senate, the temple of Jupiter, the theatre, the games), Athenae (study, philosophy), Gallia and Germania (war, camps, hostages), Hispania, Britannia (Caesar sails there), Graecia, Carthago, Venusia (the farm, the fields, the cottage).
+
+Things that go together: soldiers with camps, walls, swords, wounds and standards; sailors with ships, harbours, storms and pirates; farmers with grain, fields, oxen and cottages; students with books, tablets and a teacher; senators with speeches, the forum and the senate house; slaves with masters and mistresses; guards with prisoners and hostages.
+
+NUMBERS AND QUANTITIES — the teacher uses these constantly, so use them too: legio decima (the Tenth Legion), tres servi, duo exercitus, decem dies, septem horas, novem diebus, duos annos, multos annos, quinto mense, prima luce, postridie, illo die, tertia hora, mille passus. A sentence with a specific number in it reads far more like a real one than a vague sentence.`;
+
+                    const styleRules = SENTENCE_TYPES.includes(type) ? WORLD + `
 PEOPLE: build each sentence around a coherent situation involving people who plausibly belong together. Use these pairings — the people in one sentence must come from the SAME pairing, never mixed across them:
 ${shuffled(SCENARIOS).slice(0, 8).map(x => '- ' + x).join('\n')}
 An inanimate thing is never the subject of a human action, and never give someone subordinates they would not have (a priest has no soldiers; a farmer has no legions).
@@ -2440,7 +2600,7 @@ ${shuffled(INGREDIENTS).map(x => '- ' + x).join('\n')}
 SITUATION: each sentence must describe a plausible situation someone could picture — a siege, a letter, a lesson, a journey, an illness, a trial, a betrayal, a market, a storm at sea. Reject anything that reads as a grammar exercise about nothing.
 BANNED: "<person> lives in the city", "the messenger sends the letter", "the X sees the Y" with no further content, and any sentence whose only content is subject + verb + object.
 
-VOCABULARY IS CLOSED. Every verb, noun and adjective must come from either (a) the vocabulary lists below, or (b) a sentence in the SKELETONS or FURTHER REAL EXAMPLES sections. Proper names (Caesar, Quintus, Melissa, Roma, Gallia...) and ordinary function words (et, sed, in, ad, cum, ne, ut, non, qui, hic, ille, ipse, idem, suus, is, se, omnis, multus, and forms of sum/possum) are always allowed. If a sentence you want to write needs a word you have not been given, you must rewrite the sentence using words you have. A word this student has never met makes the question useless to him, so this rule outranks elegance.
+VOCABULARY IS CLOSED. Every verb, noun and adjective must come from either (a) the vocabulary lists below, or (b) a sentence in the SKELETONS or FURTHER REAL EXAMPLES sections. Proper names (Caesar, Quintus, Melissa, Roma, Gallia...), numerals and ordinals (unus, duo, tres, quattuor, quinque, septem, novem, decem, primus, secundus, tertius, quintus, decimus), time words (dies, hora, annus, mensis, nox, mane, postridie, tandem, statim), and ordinary function words (et, sed, in, ad, cum, ne, ut, non, qui, hic, ille, ipse, idem, suus, is, se, omnis, multus, and forms of sum/possum) are always allowed. If a sentence you want to write needs a word you have not been given, you must rewrite the sentence using words you have. A word this student has never met makes the question useless to him, so this rule outranks elegance.
 
 SEQUENCE OF TENSES — these are the errors that matter most, get them exactly right:
 - "when/since X HAD been done" -> cum + PLUPERFECT subjunctive. Passive: participle + esset/essent (cum urbs oppugnata ESSET). Never the perfect subjunctive sit/sint here — that is the single most common mistake and it is always wrong for "had".
