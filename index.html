@@ -108,6 +108,7 @@
                 model: 'gpt-3.5-turbo',
                 vocabDirection: 'latToEng',
                 batchSize: 5,
+                verifyOutput: true,
                 // Saved connections. apiKey/apiUrl/model above stay as the
                 // ACTIVE connection so every existing call site keeps working;
                 // switching a profile just copies its values into them.
@@ -869,6 +870,10 @@
                                 </div>
                                 <input type="number" id="cfg_batch" min="1" max="20" value="${state.settings.batchSize}" class="w-20 p-2 bg-white border border-stone-300 rounded-lg text-center font-bold outline-none focus:ring-2 focus:ring-sage-500 text-sm">
                             </div>
+                            <label class="flex items-start gap-2 text-xs text-stone-600 cursor-pointer mt-4 pt-4 border-t border-stone-200">
+                                <input type="checkbox" id="cfg_verify" ${state.settings.verifyOutput ? 'checked' : ''} class="rounded border-stone-300 mt-0.5">
+                                <span><strong>Proofread generated sentences</strong> — a second AI call that checks the Latin for tense, mood and agreement errors before you see it. Doubles the number of calls and roughly doubles the wait. Strongly recommended: without it, a wrong model answer will mark your correct answer wrong.</span>
+                            </label>
                         </div>
                     </div>
 
@@ -1287,6 +1292,8 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             state.settings.batchSize = Math.max(1, Math.min(20, parseInt(document.getElementById('cfg_batch').value) || 5));
             const fb = document.getElementById('cfg_fallback');
             if (fb) state.settings.autoFallback = fb.checked;
+            const vf = document.getElementById('cfg_verify');
+            if (vf) state.settings.verifyOutput = vf.checked;
             // Keep the active profile in step with hand-edited fields, so a
             // tweak here isn't silently undone the next time it's selected.
             const act = activeProfile();
@@ -2194,6 +2201,57 @@ ${rawText.substring(0, 6000)}
             return picked;
         }
 
+        // A second pass over the generated Latin. Worth the extra call: a
+        // wrong model answer is worse than a dull one, because it marks a
+        // correct answer wrong and teaches the wrong form. Reviewing text is
+        // also an easier task than composing it, so this catches errors the
+        // same model made a minute earlier.
+        async function verifyQuestions(questions, type) {
+            if (!state.settings.verifyOutput) return questions;
+            const SENTENCE_TYPES_V = ['latSentence', 'engSentence', 'unseen'];
+            if (!SENTENCE_TYPES_V.includes(type)) return questions;
+
+            const latinOf = q => type === 'engSentence' ? q.target : q.prompt;
+            const listing = questions.map((q, i) => `${i + 1}. LATIN: ${latinOf(q)}\n   ENGLISH: ${type === 'engSentence' ? q.prompt : q.target}`).join('\n');
+
+            const prompt = `You are a Latin teacher proofreading exam answers before they go to a Year 10 student. Each numbered item is a Latin sentence with its English translation. Find and fix errors in the LATIN.
+
+Check especially:
+- Sequence of tenses. "had been done" needs the PLUPERFECT subjunctive (oppugnata esset), NOT the perfect subjunctive (oppugnata sit). "was doing" needs the imperfect subjunctive. A past main verb requires the imperfect subjunctive in a following ut/ne clause.
+- Agreement: every adjective and perfect passive participle must match its noun in gender, number and case (urbs oppugnata, milites victi).
+- Case: a/ab takes the ablative; persuadeo/impero/credo take the dative; rogo/moneo/oro take the accusative; every preposition governs its proper case.
+- That the Latin and the English actually say the same thing.
+- That the sentence describes a coherent situation (a priest does not have "his soldiers").
+
+${listing}
+
+Return ONLY JSON. Include an entry for every item that needs changing; omit items that are already correct:
+{"fixes": [{"n": 1, "latin": "the corrected full Latin sentence", "why": "six words or fewer"}]}`;
+
+            try {
+                const result = await callAI(prompt, true);
+                if (!result || !Array.isArray(result.fixes)) return questions;
+                let applied = 0;
+                result.fixes.forEach(f => {
+                    const idx = parseInt(f.n, 10) - 1;
+                    if (idx < 0 || idx >= questions.length || !f.latin || typeof f.latin !== 'string') return;
+                    const fixed = f.latin.trim();
+                    // A "fix" that swapped the sentence for English, or emptied
+                    // it, is a worse outcome than the original — ignore those.
+                    if (!fixed || looksEnglish(fixed)) return;
+                    if (type === 'engSentence') questions[idx].target = fixed;
+                    else questions[idx].prompt = fixed;
+                    questions[idx].verified = true;
+                    if (f.why) questions[idx].extra = (questions[idx].extra ? questions[idx].extra + ' ' : '') + '[corrected: ' + f.why + ']';
+                    applied++;
+                });
+                if (applied) console.info(`Verification pass corrected ${applied} of ${questions.length} sentences.`);
+            } catch(e) {
+                console.warn('Verification pass failed, using unverified questions:', e);
+            }
+            return questions;
+        }
+
         async function generateQuestions(type, count) {
             // Copy, don't alias: the old code pushed placeholder words straight
             // into state.materials.vocabList when the list was empty, which
@@ -2335,14 +2393,31 @@ ${reference.map(p => p.lat).join('\n')}`;
                     // specific situations. Generated ones drift to abstract
                     // noun-verb-noun ("the messenger sends the letter") because
                     // nothing in the prompt supplies a cast. This does.
-                    const CAST = ['Caesar', 'Cicero', 'Catilina', 'Quintus', 'Marcus', 'Sextus', 'Melissa',
-                        'Hannibal', 'Alexander', 'Brutus', 'Augustus', 'Flavia', 'Horatia',
-                        'the consul', 'the centurion', 'the priest (sacerdos)', 'the queen (regina)',
-                        'the slave girl (ancilla)', 'the young man (iuvenis)', 'the old man (senex)',
-                        'the teacher (magister)', 'the students (discipuli)', 'the farmer (agricola)',
-                        'the guards (custodes)', 'the hostages (obsides)', 'the ambassadors (legati)',
-                        'the sailors (nautae)', 'the Gauls (Galli)', 'the enemy (hostes)',
-                        'the Tenth Legion (legio decima)', 'the senate (senatus)', 'the comrades (comites)'];
+                    // Naming a cast wasn't enough: the model paired roles at
+                    // random and produced things like "the priest warned HIS
+                    // SOLDIERS", which is grammatical but nonsense — a priest
+                    // has no soldiers. Real teacher sentences always pair a
+                    // role with people that role actually has authority over.
+                    // So supply whole coherent PAIRINGS rather than a flat list.
+                    const SCENARIOS = [
+                        'Caesar / a general (imperator) with his soldiers, centurions, or legions',
+                        'a centurion (centurio) with his soldiers',
+                        'a teacher (magister) with his students (discipuli)',
+                        'a master (dominus) with his slaves (servi) or slave girl (ancilla)',
+                        'a queen (regina) or king (rex) with her slave girls, daughter, or citizens',
+                        'a priest (sacerdos) with the consul, the citizens, or in the temple of Jupiter',
+                        'a father (pater) with his son (filius) or daughter (filia)',
+                        'a mother or old woman with her children or a slave girl',
+                        'Cicero with the senate, or against Catiline',
+                        'a messenger (nuntius) carrying news to Caesar, the consul, or the senate',
+                        'guards (custodes) with prisoners (captivi) or hostages (obsides)',
+                        'ambassadors (legati) with the leaders of the enemy, discussing peace',
+                        'a farmer (agricola) with his grain, horses, fields, or cottage',
+                        'sailors (nautae) with their ships, the harbour, or pirates',
+                        'Quintus, Marcus, Sextus or Melissa as friends writing letters, visiting, or asking favours',
+                        'Hannibal or Alexander with the Alps, the mountains, or an army',
+                        'the citizens (cives) of Rome fearing an attack, a siege, or a storm'
+                    ];
 
                     // Checked against his actual papers: nearly every real
                     // sentence carries two or more of these. Their absence is
@@ -2357,7 +2432,9 @@ ${reference.map(p => p.lat).join('\n')}`;
                     ];
 
                     const styleRules = SENTENCE_TYPES.includes(type) ? `
-PEOPLE: build each sentence around named people or specific roles, not abstract nouns. Draw on: ${shuffled(CAST).slice(0, 12).join(', ')}. An inanimate thing is never the subject of a human action.
+PEOPLE: build each sentence around a coherent situation involving people who plausibly belong together. Use these pairings — the people in one sentence must come from the SAME pairing, never mixed across them:
+${shuffled(SCENARIOS).slice(0, 8).map(x => '- ' + x).join('\n')}
+An inanimate thing is never the subject of a human action, and never give someone subordinates they would not have (a priest has no soldiers; a farmer has no legions).
 INGREDIENTS: every sentence must contain AT LEAST TWO of the following, and across the batch all six should appear somewhere:
 ${shuffled(INGREDIENTS).map(x => '- ' + x).join('\n')}
 SITUATION: each sentence must describe a plausible situation someone could picture — a siege, a letter, a lesson, a journey, an illness, a trial, a betrayal, a market, a storm at sea. Reject anything that reads as a grammar exercise about nothing.
@@ -2365,7 +2442,15 @@ BANNED: "<person> lives in the city", "the messenger sends the letter", "the X s
 
 VOCABULARY IS CLOSED. Every verb, noun and adjective must come from either (a) the vocabulary lists below, or (b) a sentence in the SKELETONS or FURTHER REAL EXAMPLES sections. Proper names (Caesar, Quintus, Melissa, Roma, Gallia...) and ordinary function words (et, sed, in, ad, cum, ne, ut, non, qui, hic, ille, ipse, idem, suus, is, se, omnis, multus, and forms of sum/possum) are always allowed. If a sentence you want to write needs a word you have not been given, you must rewrite the sentence using words you have. A word this student has never met makes the question useless to him, so this rule outranks elegance.
 
-BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case of every noun, the agreement of every adjective and participle, and the mood and tense of every verb in a subordinate clause. Check that each sentence describes something a person could picture. Fix anything wrong, and if you cannot fix it, replace the sentence with a simpler one you are certain of.` : '';
+SEQUENCE OF TENSES — these are the errors that matter most, get them exactly right:
+- "when/since X HAD been done" -> cum + PLUPERFECT subjunctive. Passive: participle + esset/essent (cum urbs oppugnata ESSET). Never the perfect subjunctive sit/sint here — that is the single most common mistake and it is always wrong for "had".
+- "when/while X WAS doing / WAS being done" -> cum + IMPERFECT subjunctive (cum ambularet, cum naves reficerentur).
+- "since X IS (now)" -> cum + PRESENT subjunctive (cum sit aeger).
+- Purpose and indirect command after a PRESENT or FUTURE main verb -> ut/ne + PRESENT subjunctive. After a PAST main verb -> ut/ne + IMPERFECT subjunctive (rogavit ut laborarent, NOT ut laborent).
+- A perfect passive participle must agree with its subject in gender, number and case: urbs oppugnata, milites victi, epistula scripta, hoc factum.
+- persuadeo, impero, credo and noceo take the DATIVE of the person; rogo, moneo, oro and hortor take the ACCUSATIVE.
+
+BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case of every noun, the agreement of every adjective and participle, and the mood and tense of every verb in a subordinate clause against the rules above. Check that each sentence describes something a person could picture and that the people in it plausibly go together. Fix anything wrong, and if you cannot fix it, replace the sentence with a simpler one you are certain of.` : '';
 
                     const varietyInstruction = `\nVariety is the priority. Across these ${aiCount} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
 
@@ -2391,7 +2476,10 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                             if (englishFirst && !looksEnglish(p) && looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
                             return { ...qq, type, prompt: p, target: t, source: 'ai', provider: lastUsedProfileName };
                         });
-                        if (valid.length > 0) return shuffled([...realQuestions, ...valid]);
+                        if (valid.length > 0) {
+                            const checked = await verifyQuestions(valid, type);
+                            return shuffled([...realQuestions, ...checked]);
+                        }
                         console.warn('AI returned questions but none were usable:', parsed);
                     }
                 } catch(e) {
