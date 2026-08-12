@@ -784,7 +784,11 @@
                                 <i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Sort with AI
                             </button>
                         </div>
-                        <p class="text-[11px] text-stone-400 mt-2">Sort with AI splits pasted text into vocab, grammar, and examples. It replaces this box, so check the result.</p>
+                        ${state.materials.undoSnapshot ? `
+                        <button onclick="undoSort()" class="mt-2 text-xs font-bold text-terracotta-600 border border-terracotta-500/40 rounded-lg px-3 py-1.5 hover:bg-terracotta-50 transition">
+                            <i class="fa-solid fa-rotate-left mr-1"></i> Undo Sort
+                        </button>` : ''}
+                        <p class="text-[11px] text-stone-400 mt-2">Sort with AI splits pasted text into vocab, grammar, and examples. Vocab stays here; the rest moves to its own box. Runs in batches, and can be undone.</p>
                         <label class="flex items-center gap-2 mt-3 text-xs text-stone-600 cursor-pointer">
                             <input type="checkbox" id="forceSwapCheck" ${state.materials.forceSwap ? 'checked' : ''} onchange="toggleForceSwap(this.checked)" class="rounded border-stone-300">
                             My whole list is English - Latin — swap every line
@@ -1132,29 +1136,93 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             const btn = document.getElementById('sortBtn');
             const area = document.getElementById('rawInputArea');
             const original = area.value;
+            const originalLines = original.split('\n').filter(l => l.trim() && !l.trim().startsWith('#') && !l.trim().startsWith('---'));
+
+            if (originalLines.length === 0) { alert('Nothing to sort — the corpus box is empty.'); return; }
+            if (!confirm(`Sort ${originalLines.length} lines? Vocab stays here; grammar and example sentences move to their own boxes. You can undo this straight afterwards.`)) return;
+
             btn.disabled = true;
-            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin mr-1"></i> Sorting...`;
-            try {
-                const sorted = await sortMaterialWithAI(original, 'pasted corpus');
-                area.value = sorted.vocab.join('\n');
-                if (sorted.grammar.trim()) {
-                    const gArea = document.getElementById('grammarInputArea');
-                    const combined = (state.materials.grammarNotes ? state.materials.grammarNotes + '\n\n' : '') + sorted.grammar.trim();
-                    state.materials.grammarNotes = combined;
-                    if (gArea) gArea.value = combined;
+
+            // Sort in chunks. Sending a whole corpus in one call asks the model
+            // to echo back hundreds of lines, which overruns its output limit —
+            // the reply comes back truncated or empty and the box gets wiped.
+            // That is exactly the "everything disappeared" failure.
+            const CHUNK = 60;
+            const chunks = [];
+            for (let i = 0; i < originalLines.length; i += CHUNK) chunks.push(originalLines.slice(i, i + CHUNK));
+
+            const allVocab = [];
+            let allGrammar = '', allExamples = '';
+            let failedChunks = 0;
+
+            for (let i = 0; i < chunks.length; i++) {
+                btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin mr-1"></i> Sorting ${i + 1}/${chunks.length}...`;
+                try {
+                    const sorted = await sortMaterialWithAI(chunks[i].join('\n'), 'pasted corpus');
+                    if (Array.isArray(sorted.vocab)) allVocab.push(...sorted.vocab);
+                    if (sorted.grammar && sorted.grammar.trim()) allGrammar += (allGrammar ? '\n' : '') + sorted.grammar.trim();
+                    if (sorted.examples && sorted.examples.trim()) allExamples += (allExamples ? '\n' : '') + sorted.examples.trim();
+                } catch(e) {
+                    // A failed chunk must not cost the lines in it.
+                    console.warn(`Sort chunk ${i + 1} failed, keeping its lines unchanged:`, e);
+                    allVocab.push(...chunks[i]);
+                    failedChunks++;
                 }
-                if (sorted.examples && sorted.examples.trim()) {
-                    const eArea = document.getElementById('styleExamplesArea');
-                    const combinedEx = (state.materials.styleExamples ? state.materials.styleExamples + '\n\n' : '') + sorted.examples.trim();
-                    state.materials.styleExamples = combinedEx;
-                    if (eArea) eArea.value = combinedEx;
-                }
-                saveMaterials();
-            } catch(e) {
-                alert('AI sorting failed: ' + e.message);
+                if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 800));
             }
+
             btn.disabled = false;
             btn.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Sort with AI`;
+
+            // Last line of defence: if the result would throw away a large part
+            // of the corpus, don't apply it silently.
+            const kept = allVocab.length + (allGrammar ? allGrammar.split('\n').length : 0) + (allExamples ? allExamples.split('\n').length : 0);
+            if (kept < originalLines.length * 0.6) {
+                alert(`Sorting would have discarded most of your corpus (${originalLines.length} lines in, ${kept} out), so nothing has been changed.\n\nThis usually means the AI connection is returning incomplete replies. Your corpus is untouched.`);
+                return;
+            }
+
+            // Snapshot for undo before anything is overwritten.
+            state.materials.undoSnapshot = {
+                rawText: original,
+                grammarNotes: state.materials.grammarNotes || '',
+                styleExamples: state.materials.styleExamples || ''
+            };
+
+            area.value = allVocab.join('\n');
+            if (allGrammar) {
+                const gArea = document.getElementById('grammarInputArea');
+                const combined = (state.materials.grammarNotes ? state.materials.grammarNotes + '\n\n' : '') + allGrammar;
+                state.materials.grammarNotes = combined;
+                if (gArea) gArea.value = combined;
+            }
+            if (allExamples) {
+                const eArea = document.getElementById('styleExamplesArea');
+                const combinedEx = (state.materials.styleExamples ? state.materials.styleExamples + '\n\n' : '') + allExamples;
+                state.materials.styleExamples = combinedEx;
+                if (eArea) eArea.value = combinedEx;
+            }
+            saveMaterials();
+            alert(`Sorted.\n${allVocab.length} vocab lines kept here.` +
+                  (allGrammar ? `\nGrammar moved to Grammar Notes.` : '') +
+                  (allExamples ? `\nExample sentences moved to Style Examples.` : '') +
+                  (failedChunks ? `\n\n${failedChunks} batch(es) failed and were left exactly as they were.` : '') +
+                  `\n\nIf this isn't what you wanted, press Undo Sort.`);
+        }
+
+        // Sorting rewrites three fields at once, so a plain "it looked wrong"
+        // needs a single way back.
+        function undoSort() {
+            const snap = state.materials.undoSnapshot;
+            if (!snap) { alert('Nothing to undo.'); return; }
+            if (!confirm('Restore your materials to how they were before the last sort?')) return;
+            state.materials.rawText = snap.rawText;
+            state.materials.grammarNotes = snap.grammarNotes;
+            state.materials.styleExamples = snap.styleExamples;
+            state.materials.undoSnapshot = null;
+            parseVocab();
+            saveState();
+            render();
         }
 
         // Modern Anki (2.1.50+, i.e. basically every export today) stores the real
