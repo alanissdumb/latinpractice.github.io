@@ -850,6 +850,22 @@
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
                     <h3 class="font-classical font-bold text-lg mb-1">Style Examples (Past Tests)</h3>
                     <p class="text-xs text-stone-500 font-serif italic mb-3">Real sentences from past tests, either direction. Generation copies their style. Saving also pulls any new vocab out of them.</p>
+                    ${(() => {
+                        const tm = buildTeacherModel();
+                        if (tm.sentenceCount < 8) return `<p class="text-[11px] text-stone-400 mb-3">Add at least 8 sentences below to build a style profile from them.</p>`;
+                        const pct = n => Math.round(100 * n / tm.sentenceCount);
+                        return `
+                        <div class="bg-sage-50 border border-sage-200 rounded-xl p-4 mb-4 text-xs">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="font-bold text-sage-800 uppercase tracking-wider text-[10px]">Learned style profile</span>
+                                <span class="text-stone-500">${tm.sentenceCount} sentences analysed</span>
+                            </div>
+                            <p class="text-stone-600 mb-2">Sentences run ${tm.minLength}-${tm.maxLength} words (avg ${tm.avgLength}); ${tm.subordinateFirstPct}% open with a subordinate clause.</p>
+                            <div class="mb-2"><span class="text-stone-500">Constructions: </span><span class="text-stone-800">${tm.constructions.slice(0, 5).map(([w, n]) => `${w} ${pct(n)}%`).join(' · ')}</span></div>
+                            <div><span class="text-stone-500">Word pairings: </span><span class="text-stone-800 font-mono text-[10px]">${tm.wordFreq.slice(0, 4).map(([w]) => `${w}\u2192${teacherCollocates(w, 3).join('/')}`).join('   ')}</span></div>
+                            <p class="text-[10px] text-stone-400 mt-2">Rebuilt whenever you add sentences. Every generated question is written against this.</p>
+                        </div>`;
+                    })()}
                     <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.styleExamples}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
@@ -2445,6 +2461,154 @@ Return ONLY JSON. Include an entry for every item that needs changing; omit item
             return questions;
         }
 
+        // ==================== TEACHER MODEL ====================
+        // Everything here is computed from the real sentences, with no AI and
+        // no training. The point is that "write like my teacher" is mostly a
+        // statistical fact about which words this teacher reaches for, which
+        // words they put next to each other, and which constructions they
+        // favour — all of which can be measured directly and handed to the
+        // model as fact instead of hoped for.
+        //
+        // IMPORTANT: only real teacher sentences feed this. Generated
+        // sentences are deliberately excluded — training the profile on the
+        // model's own output would make it drift toward imitating itself
+        // rather than the teacher, and that drift compounds silently.
+
+        const LATIN_STOP = new Set(['et','sed','in','ad','cum','non','qui','quae','quod','quem','quam','quos','quas',
+            'est','sunt','erat','erant','esset','essent','sit','sint','fuit','ut','ne','ex','e','ab','a','per','pro',
+            'sub','atque','nec','iam','tamen','enim','autem','se','sibi','suus','sua','suum','suos','suis','suam',
+            'hic','haec','hoc','hunc','hanc','huius','ille','illa','illud','illum','illam','illius','is','ea','id',
+            'eum','eam','eos','eas','ei','eis','ipse','ipsa','ipsum','idem','eadem','eodem','omnis','omnes','omnia',
+            'de','si','quia','dum','nam','tam','ita','sic','me','te','nos','vos','mihi','tibi','nobis','vobis']);
+
+        function latinTokens(sentence) {
+            return String(sentence || '').toLowerCase()
+                .replace(/[^a-z\s]/g, ' ')
+                .split(/\s+/).filter(Boolean);
+        }
+
+        // Crude stemmer: groups inflected forms of the same word together so
+        // "militem/militibus/milites" count as one thing. Not linguistically
+        // proper, but consistent, which is all the statistics need.
+        function crudeStem(w) {
+            if (w.length <= 4) return w;
+            const stripped = w.replace(/(ibus|orum|arum|erunt|erent|arent|irent|antur|entur|abant|ebant|issent|isset|erat|erant|avit|ivit|uit|ere|are|ire|em|es|is|us|um|am|as|os|ae|i|o|e|a|s|t)$/,'');
+            return stripped.length >= 4 ? stripped : w.slice(0, 4);
+        }
+
+        const CONSTRUCTION_TESTS = [
+            ['cum + pluperfect subjunctive', /\bcum\b[^.]*\b(\w+isset|\w+issent|esset|essent)\b/i],
+            ['cum + imperfect subjunctive', /\bcum\b[^.]*\b\w+(aret|eret|iret|arent|erent|irent|retur|rentur)\b/i],
+            ['cum + present subjunctive', /\bcum\b[^.]*\b(sit|sint|habeam|possit)\b/i],
+            ['purpose clause (ut)', /\but\b/i],
+            ['negative purpose / fear (ne)', /\bne\b/i],
+            ['indirect command', /\b(persuas|imperav|rogav|monuit|oravit|hortatus|imperat|rogat|monet)\w*/i],
+            ['passive with agent (a/ab)', /\b(a|ab)\s+\w+(o|is|e|ibus)\b/i],
+            ['perfect passive', /\b\w+(us|a|um|i|ae)\s+(est|sunt|erat|erant|esset|essent|sit|sint)\b/i],
+            ['relative clause', /\b(qui|quae|quod|quem|quam|quos|quas|cuius|quibus)\b/i],
+            ['superlative', /(issim|errim|illim)\w*/i],
+            ['comparative', /\w+(ior|ius)\b/i],
+            ['quam + superlative', /\bquam\s+\w*(issim|errim|illim)/i],
+            ['ablative of time / duration', /\b(die|diebus|annos|annis|horas|noctem|nocte|mense|luce)\b/i],
+            ['numeral', /\b(unus|unum|duo|duos|duas|tres|tria|quattuor|quinque|sex|septem|octo|novem|decem|primus|primam|secundus|tertius|quintus|decima|decimam|plures|plurimi|plurimae|plurimos)\b/i],
+            ['question word', /\b(cur|quis|quid|ubi|quo|quot|num|nonne|quando)\b/i],
+            ['imperative', /\b(ora|roga|da|fac|duc|dic|ite|venite|portate|laudate|invenite|transite)\b/i]
+        ];
+
+        let _teacherModel = null;
+        let _teacherModelKey = '';
+
+        function buildTeacherModel() {
+            const pairs = parseStylePairs();
+            const key = pairs.length + ':' + (state.materials.styleExamples || '').length;
+            if (_teacherModel && _teacherModelKey === key) return _teacherModel;
+
+            const openings = {}, wordFreq = {}, bigrams = {}, colloc = {}, constructions = {};
+            const lengths = [];
+            let subordinateFirst = 0;
+
+            pairs.forEach(p => {
+                const toks = latinTokens(p.lat);
+                if (toks.length < 2) return;
+                lengths.push(toks.length);
+                openings[toks[0]] = (openings[toks[0]] || 0) + 1;
+                if (/^(cum|ut|ne|postquam|ubi|si|quamquam|dum|antequam)$/.test(toks[0])) subordinateFirst++;
+
+                CONSTRUCTION_TESTS.forEach(([name, re]) => {
+                    if (re.test(p.lat)) constructions[name] = (constructions[name] || 0) + 1;
+                });
+
+                // Word-to-word: which word actually follows which.
+                for (let i = 0; i < toks.length - 1; i++) {
+                    const k = toks[i];
+                    bigrams[k] = bigrams[k] || {};
+                    bigrams[k][toks[i + 1]] = (bigrams[k][toks[i + 1]] || 0) + 1;
+                }
+
+                // Which content words this teacher puts in the same sentence.
+                const content = [...new Set(toks.filter(t => t.length > 3 && !LATIN_STOP.has(t)).map(crudeStem))];
+                content.forEach(t => {
+                    wordFreq[t] = (wordFreq[t] || 0) + 1;
+                    colloc[t] = colloc[t] || {};
+                    content.forEach(o => { if (o !== t) colloc[t][o] = (colloc[t][o] || 0) + 1; });
+                });
+            });
+
+            const sortedBy = obj => Object.entries(obj).sort((a, b) => b[1] - a[1]);
+            _teacherModel = {
+                sentenceCount: pairs.length,
+                avgLength: lengths.length ? Math.round(lengths.reduce((a, b) => a + b, 0) / lengths.length) : 0,
+                minLength: lengths.length ? Math.min(...lengths) : 0,
+                maxLength: lengths.length ? Math.max(...lengths) : 0,
+                subordinateFirstPct: pairs.length ? Math.round(100 * subordinateFirst / pairs.length) : 0,
+                openings: sortedBy(openings),
+                wordFreq: sortedBy(wordFreq),
+                constructions: sortedBy(constructions),
+                bigrams,
+                colloc
+            };
+            _teacherModelKey = key;
+            return _teacherModel;
+        }
+
+        // Top N words this teacher habitually puts alongside a given word.
+        function teacherCollocates(word, n) {
+            const m = buildTeacherModel();
+            const c = m.colloc[crudeStem(String(word || '').toLowerCase())];
+            if (!c) return [];
+            return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, n || 5).map(x => x[0]);
+        }
+
+        // The measured profile, written out as fact for the prompt.
+        function teacherProfileBlock() {
+            const m = buildTeacherModel();
+            if (m.sentenceCount < 8) return '';
+            const pct = n => Math.round(100 * n / m.sentenceCount);
+
+            const topOpenings = m.openings.slice(0, 8).map(([w, n]) => `${w} (${pct(n)}%)`).join(', ');
+            const topConstructions = m.constructions.slice(0, 10).map(([w, n]) => `${w}: ${pct(n)}% of sentences`).join('\n- ');
+            const topWords = m.wordFreq.slice(0, 45).map(([w]) => w).join(', ');
+
+            // The actual word-to-word part: for the teacher's commonest words,
+            // the words they genuinely appear beside.
+            const pairsList = m.wordFreq.slice(0, 18).map(([w]) => {
+                const c = teacherCollocates(w, 5);
+                return c.length ? `${w} -> ${c.join(', ')}` : null;
+            }).filter(Boolean).join('\n- ');
+
+            return `
+
+MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their real sentences. These are facts about how they actually write, not guidelines. Match them.
+- Sentence length: typically ${m.minLength}-${m.maxLength} words, averaging ${m.avgLength}. Do not write anything much shorter.
+- ${m.subordinateFirstPct}% of their sentences OPEN with a subordinate clause (cum, ut, ne, postquam, ubi). Match that proportion — most of your sentences should not start with the subject.
+- Their most frequent opening words: ${topOpenings}
+- How often they use each construction:
+- ${topConstructions}
+- The vocabulary they actually reach for, most used first: ${topWords}
+- WORD-TO-WORD PAIRINGS they habitually use — when you use the word on the left, strongly prefer the words on the right in the same sentence:
+- ${pairsList}`;
+        }
+
         async function generateQuestions(type, count) {
             // Copy, don't alias: the old code pushed placeholder words straight
             // into state.materials.vocabList when the list was empty, which
@@ -2511,6 +2675,7 @@ Return ONLY JSON. Include an entry for every item that needs changing; omit item
                     if (verbs.length) summaryParts.push(`VERBS (principal parts given — conjugate as the sentence needs; never paste a dictionary listing into a sentence): ${sample(verbs, big ? 220 : 100).map(v => `${v.latin} (${v.english})`).join('; ')}`);
                     const vocabSummary = summaryParts.join('\n');
 
+                    const teacherProfile = SENTENCE_TYPES.includes(type) ? teacherProfileBlock() : '';
                     const grammarContext = state.materials.grammarNotes
                         ? `\nGrammar rules in force (required word order, tenses/moods being taught): ${state.materials.grammarNotes.substring(0, 1200)}`
                         : '';
@@ -2687,7 +2852,7 @@ BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case 
 Write ${aiCount} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
 
 ACCURACY: every Latin sentence must be genuinely grammatical — correct case for every noun, correct agreement for every adjective and participle, correct sequence of tenses in subordinate clauses. Use the student's vocabulary below where it fits, but never paste a dictionary listing (e.g. "mitto, mittere, misi, missum") into a sentence; inflect it. If you are not certain a form is right, use a construction you are certain of instead.
-${vocabSummary}${grammarContext}${styleContext}${focusContext}
+${vocabSummary}${grammarContext}${teacherProfile}${styleContext}${focusContext}
 
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"short grammar note, optional"}]}`;
 
@@ -2733,8 +2898,15 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                 if (usableVerbs.length === 0 || usableNouns.length === 0) return null;
                 let verb = rand(usableVerbs);
                 let obj = null;
+                // Prefer pairings measured from the teacher's own sentences —
+                // no AI needed, and it is literally what the teacher does.
+                const tc = teacherCollocates(headword(verb.latin), 8);
+                if (tc.length) {
+                    const matches = usableNouns.filter(n => tc.includes(crudeStem(headword(n.latin).toLowerCase())));
+                    if (matches.length) obj = rand(matches);
+                }
                 const indexed = usableVerbs.filter(vv => Array.isArray(vv.collocates) && vv.collocates.length);
-                if (indexed.length && Math.random() < 0.7) {
+                if (!obj && indexed.length && Math.random() < 0.7) {
                     const cand = rand(indexed);
                     const objs = usableNouns.filter(n => cand.collocates.includes(n.latin));
                     if (objs.length) { verb = cand; obj = rand(objs); }
