@@ -406,6 +406,16 @@
                 pos = 'verb';
                 let vparts = parts.slice();
                 if (info.conj && vparts.length === 1) vparts = [first, infinitiveFromConj(first, info.conj, info.isIo)];
+                // A deponent's third principal part is a participle plus a
+                // form of esse ("hortatus sum") — one part, not two. Splitting
+                // it would make the principal-parts drill mark a comma the
+                // student is right not to write.
+                for (let i = vparts.length - 1; i > 0; i--) {
+                    if (/^(sum|est|es)$/i.test(vparts[i]) && /(us|a|um)$/i.test(vparts[i - 1])) {
+                        vparts[i - 1] = vparts[i - 1] + ' ' + vparts[i];
+                        vparts.splice(i, 1);
+                    }
+                }
                 return { latin: vparts.join(', '), english: engClean, pos, govCase: info.govCase };
             }
 
@@ -1734,7 +1744,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         // ordinary 2nd-declension entry like "liber, libri" fell through to
         // the 3rd-declension guess and produced "liberem, liberis, libere"
         // instead of "librum, libri, libro".
-        function getDeclension(latinEntry) {
+        function getDeclension(latinEntry, pos) {
             const parts = latinEntry.split(',').map(x => x.trim());
             const nom = parts[0];
             const gen = (parts[1] && !parts[1].startsWith('-')) ? parts[1] : '';
@@ -1765,6 +1775,14 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
                 }
                 if (/is$/.test(g)) {                      // 3rd
                     const st = gen.slice(0, -2);
+                    // A 3rd-declension ADJECTIVE is an i-stem: ablative
+                    // singular -i (ingenti), not -e. Only nouns take -e. And
+                    // the neuter test below is a noun heuristic that would
+                    // wrongly fire on vetus, veteris.
+                    if (pos === 'adjective') {
+                        const irregular = /^(vetus|dives|pauper|princeps)$/i.test(nom);
+                        return [nom, nom, st + 'em', gen, st + 'i', st + (irregular ? 'e' : 'i')];
+                    }
                     // Common 3rd-declension neuters (flumen/fluminis,
                     // corpus/corporis) keep the nominative in the accusative.
                     const neuter = /men$/i.test(nom) || (/us$/i.test(nom) && /(or|er)is$/i.test(gen)) || /(al|ar|e)$/i.test(nom);
@@ -1780,7 +1798,9 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             // 3rd-declension adjectives/nouns cited as just "fortis"/"omnis" —
             // without this the fallback appended to the whole word and gave
             // "fortisem" instead of "fortem".
-            if (/is$/.test(w)) { const st = nom.slice(0, -2); return [nom, nom, st + 'em', nom, st + 'i', st + 'i']; }
+            if (/is$/.test(w)) { const st = nom.slice(0, -2); return [nom, nom, st + 'em', nom + '', st + 'i', st + 'i']; }
+            // acer, acris -> stem from the feminine; celer likewise.
+            if (/er$/.test(w) && pos === 'adjective') { const st = nom.slice(0, -2) + 'r'; return [nom, nom, st + 'em', st + 'is', st + 'i', st + 'i']; }
             return [nom, nom, nom + 'em', nom + 'is', nom + 'i', nom + 'e'];
         }
 
@@ -3230,8 +3250,8 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                     }
                     case 'declining': {
                         const v = nextNominal();
-                        const forms = getDeclension(v.latin);
                         const isAdj = (v.pos || classifyPos(v.latin, v.english)) === 'adjective';
+                        const forms = getDeclension(v.latin, isAdj ? 'adjective' : 'noun');
                         q.prompt = `Decline (${isAdj ? 'masculine singular' : 'singular'}): ${v.latin}`;
                         q.target = `Nom. ${forms[0]}, Voc. ${forms[1]}, Acc. ${forms[2]}, Gen. ${forms[3]}, Dat. ${forms[4]}, Abl. ${forms[5]}`;
                         break;
