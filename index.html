@@ -130,7 +130,7 @@
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
-            practice: { focusTopic: '', usedExamples: [] }
+            practice: { focusTopic: '', usedExamples: [], weakSpots: '' }
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -224,14 +224,94 @@
             } catch(e) { return []; }
         }
 
+        let quotaWarned = false;
         function saveState() {
             // Strip images out of the localStorage payload — they're persisted
             // separately via saveImagesToDB() so they don't count against the
             // localStorage quota.
             const toSave = JSON.parse(JSON.stringify(state));
             toSave.materials.images = [];
-            localStorage.setItem('latin_practice_app_v4', JSON.stringify(toSave));
+
+            // An infinite practice session appends questions forever. Left
+            // unbounded it eventually fills localStorage, and the failure mode
+            // is losing the corpus, not just the questions — so keep only a
+            // recent window in the saved copy.
+            if (toSave.quiz && Array.isArray(toSave.quiz.questions) && toSave.quiz.questions.length > 60) {
+                const keepFrom = Math.max(0, toSave.quiz.index - 10);
+                toSave.quiz.questions = toSave.quiz.questions.slice(keepFrom);
+                toSave.quiz.index -= keepFrom;
+            }
+            if (toSave.quiz && Array.isArray(toSave.quiz.results) && toSave.quiz.results.length > 200) {
+                toSave.quiz.results = toSave.quiz.results.slice(-200);
+            }
+
+            try {
+                localStorage.setItem('latin_practice_app_v4', JSON.stringify(toSave));
+            } catch(e) {
+                // Silently failing here would mean the app looks fine while
+                // nothing is being kept — the worst possible failure for
+                // something holding hours of transcription.
+                console.error('Could not save to localStorage:', e);
+                if (!quotaWarned) {
+                    quotaWarned = true;
+                    alert("Your browser wouldn't save the app's data — its storage may be full.\n\nYour work is still on screen but is NOT being saved. Use Export Backup in Materials to save a copy to a file before closing this tab.");
+                }
+                return;
+            }
             saveImagesToDB(state.materials.images);
+        }
+
+        // ---- backup / restore ----
+        // Everything lives in one browser's localStorage. Clearing site data,
+        // switching browser or device, or a quota failure loses hours of
+        // transcribed papers with no way back. A file the user holds is the
+        // only real protection.
+        function exportBackup() {
+            try {
+                const payload = JSON.parse(JSON.stringify(state));
+                payload.materials.images = [];
+                payload._exportedAt = new Date().toISOString();
+                payload._appVersion = 'latin_practice_app_v4';
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const d = new Date();
+                const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                a.href = url;
+                a.download = `latin-practice-backup-${stamp}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch(e) {
+                alert('Export failed: ' + e.message);
+            }
+        }
+
+        async function importBackup(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            event.target.value = '';
+            try {
+                const text = await file.text();
+                const parsed = JSON.parse(text);
+                if (!parsed || !parsed.materials) throw new Error("that file doesn't look like a backup from this app");
+                const words = (parsed.materials.vocabList || []).length;
+                const examples = String(parsed.materials.styleExamples || '').split('\n').filter(l => l.includes('=')).length;
+                if (!confirm(`Restore this backup?\n\n${words} vocabulary words\n${examples} example sentences\n${(parsed.wordBank || []).length} word bank cards\n\nThis REPLACES everything currently in the app.`)) return;
+                state = { ...DEFAULT_STATE, ...parsed };
+                state.settings = { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) };
+                state.materials = { ...DEFAULT_STATE.materials, ...(parsed.materials || {}) };
+                state.stats = { ...DEFAULT_STATE.stats, ...(parsed.stats || {}) };
+                state.quiz = { ...DEFAULT_STATE.quiz };
+                state.materials.images = state.materials.images || [];
+                parseVocab();
+                saveState();
+                render();
+                alert('Backup restored.');
+            } catch(e) {
+                alert('Could not read that backup: ' + e.message);
+            }
         }
 
         // Rough part-of-speech guess so templates/prompts don't shove a verb's
@@ -499,7 +579,22 @@
             }
         }
 
+        // The corpus boxes only commit on Save. Navigating away from a long
+        // paste silently discarded it.
+        function materialsDirty() {
+            if (state.view !== 'materials') return false;
+            const raw = document.getElementById('rawInputArea');
+            const gram = document.getElementById('grammarInputArea');
+            const ex = document.getElementById('styleExamplesArea');
+            return (raw && raw.value !== (state.materials.rawText || '')) ||
+                   (gram && gram.value !== (state.materials.grammarNotes || '')) ||
+                   (ex && ex.value !== (state.materials.styleExamples || ''));
+        }
+
         function navigateTo(view) {
+            if (materialsDirty() && view !== 'materials') {
+                if (!confirm('You have unsaved changes to your materials. Leave without saving them?')) return;
+            }
             state.view = view;
             render();
             saveState();
@@ -519,6 +614,23 @@
                     ${list.map(p => `<option value="${p.id}" ${act && p.id === act.id ? 'selected' : ''}>${p.name}</option>`).join('')}
                 </select>`;
         }
+
+        // A thrown error anywhere in a view leaves a blank white page with no
+        // explanation and no way back. Catching it keeps the app usable and,
+        // more importantly, tells the user their data is still intact.
+        window.addEventListener('error', function(e) {
+            console.error('Uncaught error:', e.error || e.message);
+            const c = document.getElementById('appContainer');
+            if (c && !c.innerHTML.trim()) {
+                c.innerHTML = `
+                    <div class="max-w-lg mx-auto mt-10 bg-white border border-terracotta-500/30 rounded-2xl p-6 text-center">
+                        <h2 class="font-classical font-bold text-xl text-stone-800 mb-2">Something went wrong</h2>
+                        <p class="text-sm text-stone-600 mb-4">Your saved work is untouched. Go back to the home screen to carry on.</p>
+                        <p class="text-[11px] text-stone-400 font-mono mb-4">${escapeHtml(String((e.error && e.error.message) || e.message || 'unknown error'))}</p>
+                        <button onclick="navigateTo('home')" class="bg-sage-500 hover:bg-sage-600 text-white font-bold px-5 py-2.5 rounded-xl text-sm">Back to home</button>
+                    </div>`;
+            }
+        });
 
         function render() {
             renderProfileSwitcher();
@@ -651,6 +763,21 @@
                     `}
                 </div>
 
+                <details class="bg-white rounded-2xl border border-stone-200 shadow-sm" ${state.practice.weakSpots ? '' : 'open'}>
+                    <summary class="p-4 cursor-pointer text-sm font-bold text-stone-700 flex items-center justify-between">
+                        <span><i class="fa-solid fa-bullseye text-terracotta-500 mr-2"></i>Weak spots</span>
+                        <span class="text-xs font-normal text-stone-400">${weakSpotCount()} being targeted</span>
+                    </summary>
+                    <div class="px-4 pb-4">
+                        <p class="text-xs text-stone-500 mb-2">One per line. Every batch of questions deliberately targets these until you remove them.</p>
+                        <textarea id="weakSpotsArea" rows="6" placeholder="e.g. confuses adverbs with adjectives" class="w-full text-xs font-mono p-3 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 outline-none custom-scrollbar">${escapeHtml(state.practice.weakSpots || '')}</textarea>
+                        <div class="flex gap-2 mt-2">
+                            <button onclick="saveWeakSpots()" class="text-xs font-bold text-white bg-stone-900 hover:bg-black rounded-lg px-3 py-1.5 transition">Save</button>
+                            <button onclick="loadDefaultWeakSpots()" class="text-xs font-bold text-stone-600 border border-stone-300 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition">Load starter list</button>
+                        </div>
+                    </div>
+                </details>
+
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     ${modes.map(m => `
                         <button onclick="startSpecific('${m.id}')" class="bg-white hover:bg-${m.color}-50 border border-stone-200 p-6 rounded-2xl shadow-sm text-left transition group h-full flex flex-col">
@@ -751,6 +878,16 @@
                     <div>
                         <h1 class="text-3xl font-classical font-bold text-stone-800">My Materials</h1>
                         <p class="text-sm text-stone-500 font-serif italic mt-1">PDF, image, Anki deck, or plain text.</p>
+                        <div class="flex items-center gap-2 mt-3 flex-wrap">
+                            <button onclick="exportBackup()" class="text-xs font-bold text-stone-600 border border-stone-300 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition">
+                                <i class="fa-solid fa-download mr-1"></i> Export Backup
+                            </button>
+                            <button onclick="document.getElementById('importBackupInput').click()" class="text-xs font-bold text-stone-600 border border-stone-300 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition">
+                                <i class="fa-solid fa-upload mr-1"></i> Restore
+                            </button>
+                            <input type="file" id="importBackupInput" accept=".json,application/json" onchange="importBackup(event)" class="hidden">
+                            <span class="text-[11px] text-stone-400">Stored in this browser only \u2014 export after adding papers.</span>
+                        </div>
                     </div>
                     <button onclick="exportHTML()" class="bg-stone-200 hover:bg-stone-300 text-stone-800 text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition">
                         <i class="fa-solid fa-code mr-1"></i> Export HTML
@@ -776,7 +913,7 @@
                             </label>
                         </div>
 
-                        <textarea id="rawInputArea" rows="10" class="w-full flex-1 text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.rawText}</textarea>
+                        <textarea id="rawInputArea" rows="10" class="w-full flex-1 text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.materials.rawText)}</textarea>
                         
                         <div class="grid grid-cols-2 gap-2">
                             <button onclick="saveMaterials()" class="w-full bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 rounded-xl shadow transition">Save & Parse Corpus</button>
@@ -806,8 +943,8 @@
                                 <ul id="vocabList" class="divide-y divide-stone-200 text-sm font-serif">
                                     ${state.materials.vocabList.map(v => `
                                         <li class="py-2 px-2 flex justify-between items-center gap-2">
-                                            <strong class="text-stone-900">${v.latin}</strong>
-                                            <span class="text-stone-600 text-right">${v.english}</span>
+                                            <strong class="text-stone-900">${escapeHtml(v.latin)}</strong>
+                                            <span class="text-stone-600 text-right">${escapeHtml(v.english)}</span>
                                             <span class="text-[9px] text-stone-400 uppercase tracking-wide flex-shrink-0">${(v.pos || '').slice(0, 3)}</span>
                                         </li>
                                     `).join('')}
@@ -843,7 +980,7 @@
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
                     <h3 class="font-classical font-bold text-lg mb-1">Grammar Notes</h3>
                     <p class="text-xs text-stone-500 font-serif italic mb-3">Rules and paradigms. Used as context for generation, never quizzed directly.</p>
-                    <textarea id="grammarInputArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.grammarNotes}</textarea>
+                    <textarea id="grammarInputArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.materials.grammarNotes)}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Grammar Notes</button>
                 </div>
 
@@ -866,7 +1003,7 @@
                             <p class="text-[10px] text-stone-400 mt-2">Rebuilt whenever you add sentences. Every generated question is written against this.</p>
                         </div>`;
                     })()}
-                    <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${state.materials.styleExamples}</textarea>
+                    <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.materials.styleExamples)}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
             </div>`;
@@ -966,6 +1103,7 @@
                                 <button onclick="applyPreset('lmstudio')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">LM Studio (local)</button>
                                 <button onclick="applyPreset('ollama')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">Ollama (local)</button>
                                 <button onclick="applyPreset('gemini')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">Gemini</button>
+                                <button onclick="applyPreset('claude')" class="flex-1 border border-stone-300 rounded-lg py-1.5 font-bold text-stone-600 hover:bg-stone-50 transition">Claude</button>
                             </div>
                             <div>
                                 <label class="block text-xs font-semibold text-stone-600 mb-1">API Key <span class="font-normal text-stone-400">— leave blank for a local server</span></label>
@@ -1045,6 +1183,41 @@
         }
 
         // ==================== ACTIONS ====================
+
+        function weakSpotCount() {
+            return String(state.practice.weakSpots || '').split('\n').filter(l => l.trim()).length;
+        }
+
+        function saveWeakSpots() {
+            const el = document.getElementById('weakSpotsArea');
+            if (!el) return;
+            state.practice.weakSpots = el.value;
+            saveState();
+            render();
+        }
+
+        // Seeded from the errors marked on a real test paper, so the list is
+        // useful before the student has typed anything into it.
+        function loadDefaultWeakSpots() {
+            const defaults = [
+                'Writes the adverb where an adjective is needed after esse (laetissime for laetissimi) — include predicate adjectives that must agree with the subject.',
+                'Reads passive personal endings (-ris, -beris, -tur, -ntur, -mur) as active — include 1st and 2nd person passive forms.',
+                'Uses a pluperfect passive subjunctive where the imperfect passive subjunctive is required (interfectus esset for interficeretur) in a ne/ut clause after a past main verb.',
+                'Puts the object of credo, persuadeo, impero, noceo, faveo, pareo and occurro in the accusative instead of the dative.',
+                'Ignores the person of the verb when translating — reads a 1st or 2nd person verb (scias, mittam) as 3rd person.',
+                'Translates a present main verb as past (monet as "warned") — include present-tense main verbs with subordinate clauses.',
+                'Confuses cras (tomorrow) with hodie (today), and heri (yesterday).',
+                'Misreads ablative of manner (summa virtute = with the greatest courage) as a noun phrase.',
+                'Forgets the perfect 3rd plural ending -erunt (writes ambulavent for ambulaverunt).',
+                'Confuses plures (more) with plurimi (very many), and comparative with superlative generally.',
+                'Vocabulary regularly missed: aeger (sick), comites (comrades), postridie (on the next day), quam primum (as soon as possible), incolumis (safe), cesso (I idle, NOT I yield — that is cedo), opus (work, need).'
+            ].join('\n');
+            const el = document.getElementById('weakSpotsArea');
+            if (el) el.value = el.value.trim() ? el.value.trim() + '\n' + defaults : defaults;
+            state.practice.weakSpots = el ? el.value : defaults;
+            saveState();
+            render();
+        }
 
         function applyFocus() {
             const el = document.getElementById('focusInput');
@@ -1458,7 +1631,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             try {
                 const res = await fetch(`${normalizeApiUrl(url)}/chat/completions`, {
                     method: 'POST',
-                    headers: buildAuthHeaders(key),
+                    headers: buildAuthHeaders(key, url),
                     // No max_tokens: a reasoning model spends its budget on the
                     // think block and returns an empty message with a low cap,
                     // which reads as a failure when the connection is fine.
@@ -1524,6 +1697,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             if (kind === 'lmstudio') { f.key.value = ''; f.url.value = 'http://localhost:1234/v1'; f.model.value = f.model.value || 'qwen3.5-9b'; }
             if (kind === 'ollama') { f.key.value = ''; f.url.value = 'http://localhost:11434/v1'; f.model.value = f.model.value || 'qwen3:8b'; }
             if (kind === 'gemini') { f.url.value = 'https://generativelanguage.googleapis.com/v1beta/openai'; f.model.value = 'gemini-3.5-flash-lite'; f.key.focus(); }
+            if (kind === 'claude') { f.url.value = 'https://api.anthropic.com/v1'; f.model.value = 'claude-sonnet-5'; f.key.focus(); }
         }
 
         function resetProgress() {
@@ -1747,11 +1921,20 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/i.test((url || '').trim());
         }
 
-        function buildAuthHeaders(key) {
+        function buildAuthHeaders(key, url) {
             const h = { 'Content-Type': 'application/json' };
             // Only send Authorization when there's actually a key — some local
             // servers reject "Bearer " with an empty value outright.
             if (key && key.trim()) h['Authorization'] = `Bearer ${key.trim()}`;
+            // Anthropic's API refuses browser calls unless this opt-in header
+            // is present — without it every request 401s with a message naming
+            // the header. "Dangerous" refers to shipping YOUR key in a public
+            // page; here the key is the user's own, in their own browser.
+            if (/api\.anthropic\.com/i.test(url || '')) {
+                h['anthropic-dangerous-direct-browser-access'] = 'true';
+                h['anthropic-version'] = '2023-06-01';
+                if (key && key.trim()) h['x-api-key'] = key.trim();
+            }
             return h;
         }
 
@@ -1761,7 +1944,7 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             try {
                 return await fetch(`${normalizeApiUrl(conn.apiUrl)}/chat/completions`, {
                     method: 'POST',
-                    headers: buildAuthHeaders(conn.apiKey),
+                    headers: buildAuthHeaders(conn.apiKey, conn.apiUrl),
                     body: JSON.stringify(body),
                     signal: controller.signal
                 });
@@ -2444,7 +2627,7 @@ Return ONLY JSON. Include an entry for every item that needs changing; omit item
                 result.fixes.forEach(f => {
                     const idx = parseInt(f.n, 10) - 1;
                     if (idx < 0 || idx >= questions.length || !f.latin || typeof f.latin !== 'string') return;
-                    const fixed = f.latin.trim();
+                    const fixed = stripMarkdown(f.latin);
                     // A "fix" that swapped the sentence for English, or emptied
                     // it, is a worse outcome than the original — ignore those.
                     if (!fixed || looksEnglish(fixed)) return;
@@ -2713,6 +2896,17 @@ ${reference.map(p => p.lat).join('\n')}`;
                         }
                     }
 
+                    // Focus is per-session and optional. Weak spots persist and are
+                    // always applied — they are the specific things that have
+                    // actually cost marks, so questions should keep hitting them
+                    // until they stop being weak spots.
+                    const weak = String(state.practice.weakSpots || '').split('\n')
+                        .map(l => l.replace(/^[-*\s]+/, '').trim()).filter(Boolean);
+                    const weakContext = weak.length ? `
+
+KNOWN WEAK SPOTS — these are the exact mistakes this student keeps making in real tests. AT LEAST HALF of the questions in this batch must force the student to get one of these right. Do not mention the weak spot in the question; just build the sentence so it cannot be answered correctly without handling it.
+${weak.map(w => '- ' + w).join('\n')}` : '';
+
                     const focusContext = state.practice.focusTopic
                         ? `\nThe student has asked to focus on: "${state.practice.focusTopic}". Where this question type allows it, make most questions genuinely require that concept. Don't force it where it doesn't fit.`
                         : '';
@@ -2852,7 +3046,9 @@ BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case 
 Write ${aiCount} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
 
 ACCURACY: every Latin sentence must be genuinely grammatical — correct case for every noun, correct agreement for every adjective and participle, correct sequence of tenses in subordinate clauses. Use the student's vocabulary below where it fits, but never paste a dictionary listing (e.g. "mitto, mittere, misi, missum") into a sentence; inflect it. If you are not certain a form is right, use a construction you are certain of instead.
-${vocabSummary}${grammarContext}${teacherProfile}${styleContext}${focusContext}
+${vocabSummary}${grammarContext}${teacherProfile}${styleContext}${weakContext}${focusContext}
+
+PLAIN TEXT ONLY inside the JSON strings: no markdown, no asterisks for emphasis, no backticks, no bold. A question is read exactly as written.
 
 Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"...", "extra":"short grammar note, optional"}]}`;
 
@@ -2867,7 +3063,8 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                             let { prompt: p, target: t } = qq;
                             if (latinFirst && looksEnglish(p) && !looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
                             if (englishFirst && !looksEnglish(p) && looksEnglish(t)) { const tmp = p; p = t; t = tmp; }
-                            return { ...qq, type, prompt: p, target: t, source: 'ai', provider: lastUsedProfileName };
+                            return { ...qq, type, prompt: stripMarkdown(p), target: stripMarkdown(t),
+                                     extra: stripMarkdown(qq.extra || ''), source: 'ai', provider: lastUsedProfileName };
                         });
                         if (valid.length > 0) {
                             const checked = await verifyQuestions(valid, type);
@@ -3159,13 +3356,173 @@ Answer their specific question clearly and directly, like a teacher explaining a
                 const answer = await callAI(prompt, false);
                 document.getElementById(qId).innerHTML = `
                     <p class="font-bold text-stone-700">You asked: ${question}</p>
-                    <p class="text-stone-600 mt-1">${answer}</p>`;
+                    <p class="text-stone-600 mt-1">${markdownToHtml(answer)}</p>`;
             } catch(e) {
                 document.getElementById(qId).innerHTML = `
                     <p class="font-bold text-stone-700">You asked: ${question}</p>
                     <p class="text-terracotta-600 mt-1">Couldn't get an answer right now (${e.message}). Try again in a moment.</p>`;
             }
             btn.disabled = false;
+        }
+
+        // ==================== TEXT RENDERING ====================
+        // Models emit markdown whether or not you ask for it. A question is
+        // plain text and shows literal asterisks if you don't strip them; a
+        // teacher's explanation genuinely benefits from emphasis, so that gets
+        // converted to HTML instead.
+
+        function stripMarkdown(str) {
+            return String(str || '')
+                .replace(/```[\s\S]*?```/g, ' ')
+                .replace(/\*\*\*(.+?)\*\*\*/g, '$1')
+                .replace(/\*\*(.+?)\*\*/g, '$1')
+                .replace(/(^|[\s(])\*(?!\s)(.+?)(?<!\s)\*/g, '$1$2')
+                .replace(/__(.+?)__/g, '$1')
+                .replace(/(^|[\s(])_(?!\s)(.+?)(?<!\s)_/g, '$1$2')
+                .replace(/`([^`]+)`/g, '$1')
+                .replace(/^#{1,6}\s+/gm, '')
+                .replace(/^\s*[-*+]\s+/gm, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function escapeHtml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        // Escape first, then convert — so model output can never inject markup.
+        function markdownToHtml(str) {
+            return escapeHtml(str)
+                .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/(^|[\s(])\*(?!\s)(.+?)(?<!\s)\*/g, '$1<em>$2</em>')
+                .replace(/`([^`]+)`/g, '<code class="bg-stone-200 rounded px-1">$1</code>')
+                .replace(/\n{2,}/g, '</p><p class="mt-2">')
+                .replace(/\n/g, '<br>');
+        }
+
+        // ==================== LOCAL GRADING ====================
+        // Vocab and the identification drills are mechanical: the answer is
+        // either in the list or it isn't. Sending them to an AI added a
+        // network round trip per card, which is what made recall feel slow
+        // next to Anki. Nothing here touches the network.
+
+        function normalizeForMatch(str) {
+            return String(str || '')
+                .toLowerCase()
+                .replace(/\([^)]*\)/g, ' ')          // drop parentheticals: "hand (band of robbers)"
+                .replace(/\[[^\]]*\]/g, ' ')
+                .replace(/[^a-z\s]/g, ' ')            // punctuation and stray digits
+                .replace(/\b(a|an|the)\b/g, ' ')     // articles never distinguish an answer
+                .replace(/^\s*to\s+/, ' ')           // "to send" == "send"
+                .replace(/^\s*i\s+/, ' ')            // "I send"  == "send"
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        // A gloss like "hand, band (of robbers)" or "look for / seek" offers
+        // several acceptable answers.
+        function acceptableAnswers(target) {
+            return String(target || '')
+                .split(/[,;\/]| or /)
+                .map(normalizeForMatch)
+                .filter(Boolean);
+        }
+
+        // Damerau-Levenshtein, not plain Levenshtein: it counts a transposition
+        // ("kign" for "king") as ONE error rather than two. Swapping adjacent
+        // letters is the commonest typing slip there is, so plain Levenshtein
+        // would mark exactly the mistakes a fast typist makes.
+        function levenshtein(a, b) {
+            if (a === b) return 0;
+            if (!a.length || !b.length) return Math.max(a.length, b.length);
+            const d = [];
+            for (let i = 0; i <= a.length; i++) d[i] = [i];
+            for (let j = 0; j <= b.length; j++) d[0][j] = j;
+            for (let i = 1; i <= a.length; i++) {
+                for (let j = 1; j <= b.length; j++) {
+                    const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+                    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+                        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+                    }
+                }
+            }
+            return d[a.length][b.length];
+        }
+
+        // Order-insensitive set match, for answers like "Singular, Feminine,
+        // Accusative" where the order taught varies and shouldn't be marked
+        // wrong. Also tolerates the usual abbreviations.
+        const GRAMMAR_SYNONYMS = {
+            sing: 'singular', sg: 'singular', s: 'singular', pl: 'plural', plur: 'plural',
+            masc: 'masculine', m: 'masculine', fem: 'feminine', f: 'feminine', neut: 'neuter', n: 'neuter',
+            nom: 'nominative', voc: 'vocative', acc: 'accusative', gen: 'genitive', genative: 'genitive',
+            dat: 'dative', abl: 'ablative',
+            ind: 'indicative', indic: 'indicative', subj: 'subjunctive', subjunc: 'subjunctive',
+            imp: 'imperative', imper: 'imperative',
+            pres: 'present', impf: 'imperfect', imperf: 'imperfect', fut: 'future',
+            perf: 'perfect', plup: 'pluperfect', pluperf: 'pluperfect', 'plu': 'pluperfect',
+            act: 'active', pass: 'passive', dep: 'deponent'
+        };
+
+        function grammarTerms(str) {
+            return normalizeForMatch(str).split(/\s+/)
+                .map(w => GRAMMAR_SYNONYMS[w] || w)
+                .filter(w => w && w !== 'and' && w !== 'or');
+        }
+
+        function gradeGrammarIdentification(userAns, target) {
+            const want = new Set(grammarTerms(target));
+            const got = new Set(grammarTerms(userAns));
+            // The model answer sometimes offers alternatives ("Dative or
+            // Ablative"); naming one of them is a correct answer.
+            const missing = [...want].filter(w => !got.has(w));
+            if (missing.length === 0) return { correct: true };
+            if (/\bor\b/i.test(target) && missing.length <= 1 && got.size >= want.size - 1) return { correct: true };
+            return { correct: false, missing };
+        }
+
+        function gradeLocally(type, userAns, target) {
+            if (type === 'genderCase' || type === 'moodTenseVoice') {
+                return gradeGrammarIdentification(userAns, target);
+            }
+            const got = normalizeForMatch(userAns);
+            if (!got) return { correct: false };
+            const options = acceptableAnswers(target);
+            if (options.includes(got)) return { correct: true };
+            // Whole-gloss match, for a student who typed every sense.
+            if (normalizeForMatch(target) === got) return { correct: true };
+            // A single typo shouldn't read as not knowing the word. Flagged so
+            // the spelling still gets shown rather than silently accepted.
+            for (const opt of options) {
+                // Same length = a slip of the fingers (transposition or a
+                // wrong key), never a different word.
+                if (opt.length >= 4 && got.length === opt.length && levenshtein(got, opt) <= 1) return { correct: true, typo: opt };
+                // Different length means a letter was added or dropped, which
+                // CAN produce a genuinely different word ("kin" vs "king") —
+                // so only forgive that in words long enough to be unambiguous.
+                if (opt.length >= 6 && levenshtein(got, opt) <= 1) return { correct: true, typo: opt };
+                if (opt.length >= 9 && levenshtein(got, opt) <= 2) return { correct: true, typo: opt };
+            }
+            return { correct: false };
+        }
+
+        // Self-grade override, the way Anki lets you say "I actually knew
+        // that". Local matching is strict by design, so there has to be a way
+        // to correct it without an AI call.
+        function overrideCorrect() {
+            const q = state.quiz.questions[state.quiz.index];
+            const last = state.quiz.results[state.quiz.results.length - 1];
+            if (last && !last.correct) {
+                last.correct = true;
+                state.stats.totalCorrect++;
+            }
+            const fb = document.getElementById('feedbackBox');
+            if (fb) fb.innerHTML = `<div class="text-sm font-bold text-sage-700"><i class="fa-solid fa-check mr-1"></i> Marked correct.</div>`;
+            saveState();
         }
 
         async function evaluateAnswer() {
@@ -3183,7 +3540,10 @@ Answer their specific question clearly and directly, like a teacher explaining a
             
             state.quiz.answered = true;
             btn.disabled = true;
-            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+            // A spinner on a sub-millisecond check just adds visual noise.
+            if (!['vocab', 'genderCase', 'moodTenseVoice', 'principalParts'].includes(q.type)) {
+                btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
+            }
             
             let feedback = '';
             let isCorrect = false;
@@ -3202,8 +3562,17 @@ Answer their specific question clearly and directly, like a teacher explaining a
                 return cleanAns === cleanTgt;
             }
 
+            // Instant path: no network, no spinner.
+            const LOCAL_GRADED = ['vocab', 'genderCase', 'moodTenseVoice', 'principalParts'];
+            let localTypo = null;
+
             if (userAns === '') {
                 isCorrect = false;
+            } else if (LOCAL_GRADED.includes(q.type)) {
+                const res = gradeLocally(q.type, userAns, q.target);
+                isCorrect = res.correct;
+                if (res.typo) { localTypo = res.typo; feedback = `Spelling: ${res.typo}`; }
+                else if (!res.correct && res.missing && res.missing.length) feedback = `Missing: ${res.missing.join(', ')}`;
             } else if (aiConfigured()) {
                 // Let the AI make the actual correctness call, not just add
                 // commentary after a rigid string-match — translation questions
@@ -3251,7 +3620,11 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
                     <div class="space-y-1 text-sm font-serif text-stone-800">
                         <p><strong class="font-sans text-xs uppercase text-stone-500">Correct:</strong> ${q.target}</p>
                         <p class="pt-1"><strong class="font-sans text-xs uppercase text-stone-500">Yours:</strong> <span class="${isCorrect ? 'text-sage-700' : 'text-terracotta-700'}">${userAns}</span></p>
-                        ${feedback ? `<p class="pt-2 text-stone-600 italic border-t border-stone-200 mt-2 pt-2">${feedback}</p>` : ''}
+                        ${feedback ? `<p class="pt-2 text-stone-600 italic border-t border-stone-200 mt-2 pt-2">${markdownToHtml(feedback)}</p>` : ''}
+                        ${(!isCorrect && LOCAL_GRADED.includes(q.type)) ? `
+                        <button onclick="overrideCorrect()" class="mt-2 text-[11px] font-bold text-stone-500 hover:text-sage-700 border border-stone-300 rounded-lg px-2.5 py-1 transition">
+                            <i class="fa-solid fa-check mr-1"></i> I was right — mark correct
+                        </button>` : ''}
                     </div>
                 `;
             }
