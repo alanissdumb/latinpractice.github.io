@@ -130,7 +130,12 @@
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
-            practice: { focusTopic: '', usedExamples: [], weakSpots: '' }
+            practice: { focusTopic: '', usedExamples: [], weakSpots: '' },
+            // Practice sentences that are NOT the teacher's own work. Kept
+            // apart from styleExamples on purpose: they may be used as
+            // skeletons, but must never feed the measured teacher profile, or
+            // that profile slowly stops describing the teacher.
+            extraSentences: ''
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -148,6 +153,7 @@
                     if (parsed.materials) state.materials = { ...DEFAULT_STATE.materials, ...parsed.materials };
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
                     if (parsed.practice) state.practice = { ...DEFAULT_STATE.practice, ...parsed.practice };
+                    if (typeof parsed.extraSentences === 'string') state.extraSentences = parsed.extraSentences;
                     // Anyone upgrading has a single connection configured but
                     // no profiles — turn it into the first profile so they
                     // don't have to re-enter it.
@@ -1014,6 +1020,10 @@
                         </div>`;
                     })()}
                     <textarea id="styleExamplesArea" rows="8" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.materials.styleExamples)}</textarea>
+
+                    <h3 class="font-classical font-bold text-lg mb-1">Extra Practice Sentences</h3>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Sentences that are NOT your teacher's own work \u2014 generated, or from a textbook. Used as models for new questions, but deliberately excluded from the learned style profile so that profile keeps describing your teacher.</p>
+                    <textarea id="extraSentencesArea" rows="6" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.extraSentences || '')}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
             </div>`;
@@ -1313,6 +1323,8 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             if (gArea) state.materials.grammarNotes = gArea.value;
             const eArea = document.getElementById('styleExamplesArea');
             if (eArea) state.materials.styleExamples = eArea.value;
+            const xArea = document.getElementById('extraSentencesArea');
+            if (xArea) state.extraSentences = xArea.value;
             parseVocab();
             saveState();
             render();
@@ -2587,8 +2599,21 @@ ${rawText.substring(0, 6000)}
         // sentences. Serving some of them verbatim guarantees a slice of every
         // session is exactly the target quality, instead of everything being
         // an imitation of it.
+        // Teacher-only. The statistical profile is built from this alone.
         function parseStylePairs() {
-            return String(state.materials.styleExamples || '').split('\n')
+            return parsePairsFrom(state.materials.styleExamples);
+        }
+
+        // Teacher sentences plus extra practice ones — used for skeletons and
+        // for serving real sentences, where coverage helps and provenance
+        // doesn't distort a measurement.
+        function parseAllPairs() {
+            return [...parsePairsFrom(state.materials.styleExamples),
+                    ...parsePairsFrom(state.extraSentences)];
+        }
+
+        function parsePairsFrom(src) {
+            return String(src || '').split('\n')
                 .map(l => l.trim())
                 .filter(l => l && !l.startsWith('#') && !l.startsWith('---') && l.includes('='))
                 .map(l => {
@@ -2898,7 +2923,7 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
                     // instead of hoping for it.
                     let styleContext = '';
                     let assignedSkeletons = [];
-                    const allPairs = parseStylePairs();
+                    const allPairs = parseAllPairs();
                     if (allPairs.length) {
                         if (SENTENCE_TYPES.includes(type)) {
                             const pool = shuffled(allPairs);
