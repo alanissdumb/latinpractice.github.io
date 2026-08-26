@@ -21,13 +21,25 @@
             theme: {
                 extend: {
                     colors: {
+                        // Driven by CSS variables so the accent can be changed at
+                        // runtime without regenerating any class names.
                         sage: {
-                            50: '#f4f7f4', 100: '#e3ebe3', 200: '#c8d7c8', 300: '#a3bca2',
-                            400: '#87a08b', 500: '#6c8570', 600: '#536a57', 700: '#435547',
-                            800: '#38463c', 900: '#2f3b33',
+                            50: 'rgb(var(--accent-50) / <alpha-value>)',
+                            100: 'rgb(var(--accent-100) / <alpha-value>)',
+                            200: 'rgb(var(--accent-200) / <alpha-value>)',
+                            300: 'rgb(var(--accent-300) / <alpha-value>)',
+                            400: 'rgb(var(--accent-400) / <alpha-value>)',
+                            500: 'rgb(var(--accent-500) / <alpha-value>)',
+                            600: 'rgb(var(--accent-600) / <alpha-value>)',
+                            700: 'rgb(var(--accent-700) / <alpha-value>)',
+                            800: 'rgb(var(--accent-800) / <alpha-value>)',
+                            900: 'rgb(var(--accent-900) / <alpha-value>)',
                         },
                         parchment: {
-                            50: '#fdfbf7', 100: '#f7f2e8', 200: '#eee3d0', 300: '#e1ceb1',
+                            50: 'rgb(var(--paper-50) / <alpha-value>)',
+                            100: 'rgb(var(--paper-100) / <alpha-value>)',
+                            200: 'rgb(var(--paper-200) / <alpha-value>)',
+                            300: 'rgb(var(--paper-300) / <alpha-value>)',
                         },
                         terracotta: {
                             500: '#c85a32', 600: '#af4723',
@@ -43,6 +55,17 @@
         }
     </script>
     <style>
+        /* Default theme: a neutral warm grey. Set here as well as in JS so the
+           page never flashes an unstyled or wrongly-coloured frame before the
+           saved theme is applied. */
+        :root {
+            --accent-50: 246 245 243;  --accent-100: 235 233 229; --accent-200: 214 210 203;
+            --accent-300: 184 178 168; --accent-400: 150 143 132; --accent-500: 120 113 104;
+            --accent-600: 97 91 84;    --accent-700: 79 74 69;    --accent-800: 65 61 57;
+            --accent-900: 47 44 41;
+            --paper-50: 250 250 249;   --paper-100: 245 245 244;  --paper-200: 231 229 228;
+            --paper-300: 214 211 209;
+        }
         /* Fraunces is a variable font — set optical size + a little "soft" axis
            so headings read as warm/bookish rather than the stiff all-caps
            Roman-inscription look Cinzel gave everything. */
@@ -55,12 +78,12 @@
         .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
-        input[type=range]::-webkit-slider-runnable-track { background: #c8d7c8; height: 6px; border-radius: 3px; }
-        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -5px; background: #6c8570; height: 16px; width: 16px; border-radius: 50%; }
+        input[type=range]::-webkit-slider-runnable-track { background: rgb(var(--accent-200)); height: 6px; border-radius: 3px; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -5px; background: rgb(var(--accent-500)); height: 16px; width: 16px; border-radius: 50%; }
         .strike-through { position: relative; }
         .strike-through::after {
             content: ''; position: absolute; left: 0; top: 50%; width: 100%; height: 2px;
-            background: #6c8570; opacity: 0.6; transform: scaleX(0); transform-origin: left; transition: transform 0.4s ease;
+            background: rgb(var(--accent-500)); opacity: 0.6; transform: scaleX(0); transform-origin: left; transition: transform 0.4s ease;
         }
         .strike-through.done::after { transform: scaleX(1); }
     </style>
@@ -108,6 +131,7 @@
                 model: 'gpt-3.5-turbo',
                 vocabDirection: 'latToEng',
                 batchSize: 5,
+                theme: 'stone',
                 verifyOutput: true,
                 // Saved connections. apiKey/apiUrl/model above stay as the
                 // ACTIVE connection so every existing call site keeps working;
@@ -130,6 +154,7 @@
             },
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
+            mistakes: [],
             practice: { focusTopic: '', usedExamples: [], weakSpots: '' },
             // Practice sentences that are NOT the teacher's own work. Kept
             // apart from styleExamples on purpose: they may be used as
@@ -154,6 +179,7 @@
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
                     if (parsed.practice) state.practice = { ...DEFAULT_STATE.practice, ...parsed.practice };
                     if (typeof parsed.extraSentences === 'string') state.extraSentences = parsed.extraSentences;
+                    if (Array.isArray(parsed.mistakes)) state.mistakes = parsed.mistakes;
                     // Anyone upgrading has a single connection configured but
                     // no profiles — turn it into the first profile so they
                     // don't have to re-enter it.
@@ -228,6 +254,45 @@
                     req.onerror = () => resolve([]);
                 });
             } catch(e) { return []; }
+        }
+
+        // ==================== THEME ====================
+        // Accent palettes as "r g b" triples so they can be dropped straight
+        // into a CSS colour with Tailwind's alpha placeholder and keep Tailwind's opacity modifiers
+        // (bg-sage-500/20 and so on) working.
+        const THEMES = {
+            stone:     { name: 'Stone',    swatch: '#787168', paper: ['250 250 249', '245 245 244', '231 229 228', '214 211 209'],
+                         accent: ['246 245 243','235 233 229','214 210 203','184 178 168','150 143 132','120 113 104','97 91 84','79 74 69','65 61 57','47 44 41'] },
+            slate:     { name: 'Slate',    swatch: '#64748b', paper: ['250 250 250', '244 245 246', '229 231 234', '212 215 219'],
+                         accent: ['248 250 252','241 245 249','226 232 240','203 213 225','148 163 184','100 116 139','71 85 105','51 65 85','30 41 59','15 23 42'] },
+            sage:      { name: 'Sage',     swatch: '#6c8570', paper: ['253 251 247', '247 242 232', '238 227 208', '225 206 177'],
+                         accent: ['244 247 244','227 235 227','200 215 200','163 188 162','135 160 139','108 133 112','83 106 87','67 85 71','56 70 60','47 59 51'] },
+            ink:       { name: 'Ink',      swatch: '#3f3f46', paper: ['250 250 250', '244 244 245', '228 228 231', '212 212 216'],
+                         accent: ['250 250 250','244 244 245','228 228 231','212 212 216','161 161 170','113 113 122','82 82 91','63 63 70','39 39 42','24 24 27'] },
+            ocean:     { name: 'Ocean',    swatch: '#0e7490', paper: ['250 250 249', '244 246 247', '228 233 235', '210 217 220'],
+                         accent: ['236 254 255','207 250 254','165 243 252','103 232 249','34 211 238','14 116 144','13 100 122','21 84 102','22 68 82','8 51 63'] },
+            plum:      { name: 'Plum',     swatch: '#7e5a75', paper: ['252 250 251', '247 243 246', '234 227 232', '216 205 213'],
+                         accent: ['250 247 249','242 235 240','226 212 222','201 178 195','161 130 152','126 90 117','104 73 96','85 60 79','70 50 65','50 36 47'] },
+            clay:      { name: 'Clay',     swatch: '#a1613f', paper: ['253 251 248', '248 243 236', '238 227 213', '223 204 183'],
+                         accent: ['252 247 243','247 235 226','237 212 193','216 176 145','186 133 95','161 97 63','133 78 50','108 64 42','88 53 36','62 37 25'] },
+            forest:    { name: 'Forest',   swatch: '#3f6212', paper: ['252 252 249', '246 247 240', '232 235 222', '213 218 199'],
+                         accent: ['247 250 240','236 243 222','215 231 188','183 210 140','139 176 79','99 130 34','63 98 18','54 83 20','45 66 21','26 46 5'] }
+        };
+
+        function applyTheme(key) {
+            const t = THEMES[key] || THEMES.stone;
+            const r = document.documentElement.style;
+            const steps = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900];
+            t.accent.forEach((v, i) => r.setProperty('--accent-' + steps[i], v));
+            [50, 100, 200, 300].forEach((step, i) => r.setProperty('--paper-' + step, t.paper[i]));
+        }
+
+        function setTheme(key) {
+            if (!THEMES[key]) return;
+            state.settings.theme = key;
+            applyTheme(key);
+            saveState();
+            render();
         }
 
         let quotaWarned = false;
@@ -773,11 +838,23 @@
                         </div>
                     ` : `
                         <div class="flex gap-2">
-                            <input type="text" id="focusInput" placeholder="Focus on something? e.g. subjunctive, cum clauses, indirect commands" class="flex-1 text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
+                            <input type="text" id="focusInput" placeholder="Focus on something? e.g. ablative absolute, deponents, participles" class="flex-1 text-sm border border-stone-300 rounded-lg p-2.5 focus:ring-2 focus:ring-sage-500 outline-none">
                             <button onclick="applyFocus()" class="px-4 py-2 bg-stone-900 hover:bg-black text-white text-sm font-bold rounded-lg transition whitespace-nowrap">Set focus</button>
                         </div>
                     `}
                 </div>
+
+                ${(state.mistakes || []).length > 0 ? `
+                <div class="bg-terracotta-50 border border-terracotta-500/30 rounded-2xl p-4 flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <div class="font-bold text-stone-800 text-sm"><i class="fa-solid fa-rotate-left text-terracotta-600 mr-2"></i>Review your mistakes</div>
+                        <p class="text-xs text-stone-500 mt-0.5">${state.mistakes.length} question${state.mistakes.length === 1 ? '' : 's'} you got wrong, most-missed first. No AI needed.</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="clearMistakes()" class="text-xs font-bold text-stone-500 hover:text-stone-800 px-2">Clear</button>
+                        <button onclick="startMistakeReview()" class="px-4 py-2 bg-terracotta-600 hover:bg-terracotta-700 text-white text-sm font-bold rounded-lg transition">Review</button>
+                    </div>
+                </div>` : ''}
 
                 <details class="bg-white rounded-2xl border border-stone-200 shadow-sm" ${state.practice.weakSpots ? '' : 'open'}>
                     <summary class="p-4 cursor-pointer text-sm font-bold text-stone-700 flex items-center justify-between">
@@ -1160,6 +1237,21 @@
                                 </div>
                             </div>
                             <p class="text-[11px] text-stone-400 mt-2">Which side you see first in Vocabulary Recall.</p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-stone-200 pt-6">
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-stone-600 mb-3">Appearance</h3>
+                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-200">
+                            <div class="flex flex-wrap gap-2">
+                                ${Object.entries(THEMES).map(([key, t]) => `
+                                    <button onclick="setTheme('${key}')" title="${t.name}"
+                                        class="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-lg border transition text-xs font-bold ${state.settings.theme === key ? 'border-sage-500 bg-white text-stone-800 ring-2 ring-sage-500/30' : 'border-stone-300 text-stone-500 hover:bg-white'}">
+                                        <span class="w-4 h-4 rounded-full border border-black/10" style="background:${t.swatch}"></span>
+                                        ${t.name}
+                                    </button>`).join('')}
+                            </div>
+                            <p class="text-[11px] text-stone-400 mt-3">Changes the accent colour used for buttons, highlights and the page background.</p>
                         </div>
                     </div>
 
@@ -1731,6 +1823,29 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         }
 
         // ==================== QUIZ ENGINE ====================
+
+        // Re-serve the questions actually missed, hardest first. No generation
+        // and no network — these already exist.
+        function startMistakeReview() {
+            const list = (state.mistakes || []).slice();
+            if (list.length === 0) { alert('No mistakes recorded yet. Practise something first and anything you miss will collect here.'); return; }
+            list.sort((a, b) => (b.misses - a.misses) || (b.at - a.at));
+            state.quiz = {
+                active: true, type: 'mistakes',
+                questions: list.slice(0, 20).map(m => ({ type: m.type, prompt: m.prompt, target: m.target, extra: '', source: 'mistake' })),
+                index: 0, isInfinite: false, results: [], answered: false
+            };
+            state.view = 'quiz';
+            saveState();
+            render();
+        }
+
+        function clearMistakes() {
+            if (!confirm('Clear the whole list of recorded mistakes?')) return;
+            state.mistakes = [];
+            saveState();
+            render();
+        }
 
         async function startSpecific(type) {
             state.quiz.isInfinite = true;
@@ -2568,6 +2683,11 @@ ${rawText.substring(0, 6000)}
             c => c.sAnimate && ({ lat: `nuntius dicit ${c.Sa} ${c.Oa} ${c.v.inf}.`, eng: `The messenger says that the ${c.sEn} is ${enGerund(c.vEn)} the ${c.oEn}.` }),
             c => c.v.plupf3sg && ({ lat: `ubi ${c.Sn} ${c.Oa} ${c.v.plupf3sg}, omnes gaudebant.`, eng: `When the ${c.sEn} had ${enPP(c.vEn)} the ${c.oEn}, everyone was rejoicing.` }),
             c => (c.v.ppp && c.oGender) && ({ lat: `${c.On} a ${c.Sabl} ${c.v.ppp[c.oGender]} est.`, eng: `The ${c.oEn} was ${enPP(c.vEn)} by the ${c.sEn}.` }),
+            // Ablative absolute: noun and perfect participle both in the
+            // ablative, standing apart from the main clause.
+            c => (c.v.ppp && c.oGender && c.sAnimate) && ({ lat: `${c.Oabl} ${abl(c.v.ppp[c.oGender])}, ${c.Sn} ${c.place.acc} festinavit.`, eng: `When the ${c.oEn} had been ${enPP(c.vEn)}, the ${c.sEn} hurried ${c.place.engTo}.` }),
+            c => (c.v.ppp && c.oGender) && ({ lat: `${c.Oabl} ${abl(c.v.ppp[c.oGender])}, omnes ${c.adv.lat} gaudebant.`, eng: `When the ${c.oEn} had been ${enPP(c.vEn)}, everyone was ${c.adv.eng} rejoicing.` }),
+            c => (c.v.ppp && c.oGender && c.sAnimate) && ({ lat: `${c.Oabl} ${abl(c.v.ppp[c.oGender])}, ${c.Sn} ${c.place.abl} manebat.`, eng: `After the ${c.oEn} had been ${enPP(c.vEn)}, the ${c.sEn} was staying ${c.place.eng}.` }),
             c => (c.sAnimate && c.adv.manner) && ({ lat: `tam ${c.adv.lat} ${c.Sn} laborat ut ${c.Oa} ${c.v.presSubj3sg}.`, eng: `The ${c.sEn} works so ${c.adv.eng} that he ${en3sg(c.vEn)} the ${c.oEn}.` }),
             c => c.sAnimate && ({ lat: `cur ${c.Sn} ${c.Oa} ${c.v.pres3sg}?`, eng: `Why does the ${c.sEn} ${c.vEn} the ${c.oEn}?` }),
             c => (c.sAnimate && c.Spl) && ({ lat: `${c.Spl.nom} ${c.place.acc} festinaverunt ut ${c.Oa} ${c.v.presSubj3pl}.`, eng: `The ${c.sEnPl} hurried ${c.place.engTo} in order to ${c.vEn} the ${c.oEn}.` })
@@ -2587,6 +2707,11 @@ ${rawText.substring(0, 6000)}
             c => c.v.perf3sg && ({ lat: `${c.Sn} ${c.v.perf3sg}`, eng: `the ${c.sEn} ${enPast(c.vEn)}` }),
             c => ({ lat: `${c.adv.lat} ${c.v.pres3pl}`, eng: `they ${c.adv.eng} ${c.vEn}` })
         ];
+
+        // Ablative singular of a perfect participle: -us/-um -> -o, -a -> -a.
+        function abl(participle) {
+            return participle.replace(/(us|um)$/i, 'o');
+        }
 
         function pluralEn(word) {
             if (/(s|x|z|ch|sh)$/i.test(word)) return word + 'es';
@@ -2734,6 +2859,17 @@ Return ONLY JSON. Include an entry for every item that needs changing; omit item
             ['passive with agent (a/ab)', /\b(a|ab)\s+\w+(o|is|e|ibus)\b/i],
             ['perfect passive', /\b\w+(us|a|um|i|ae)\s+(est|sunt|erat|erant|esset|essent|sit|sint)\b/i],
             ['relative clause', /\b(qui|quae|quod|quem|quam|quos|quas|cuius|quibus)\b/i],
+            // A noun and a perfect participle side by side, both ablative, is
+            // an ablative absolute: "urbe capta", "his rebus factis",
+            // "portis clausis", "signo dato". Also catches the participle-first
+            // order and the participle-less type ("Caesare duce").
+            // Ablative noun + ablative perfect participle, then a comma.
+            // The noun can end -a/-o/-e/-u (singular) or -is/-bus (plural, so
+            // "his rebus factis" is caught), and the participle -a/-o/-is.
+            ['ablative absolute', /\b\w{2,}(?:a|o|e|u|is|bus)\s+\w{2,}(?:t|s|x)(?:a|o|is)\b\s*,|\b\w+e\s+(?:duce|rege|consule|puero|magistro|imperatore)\b\s*,/i],
+            ['present participle', /\b\w{3,}(ns|ntem|ntis|ntes|ntia|ntibus)\b/i],
+            ['perfect participle (attributive)', /\b\w{3,}(tus|ta|tum|ti|tae|tos|tas|sus|sa|sum|si|sae)\b/i],
+            ['deponent verb', /\b(hortat|conat|verit|locut|secut|profect|ingress|egress|progress|regress|mortu|pass|ort|potit|consolat|morat|laps|adgress)\w*/i],
             ['superlative', /(issim|errim|illim)\w*/i],
             ['comparative', /\w+(ior|ius)\b/i],
             ['quam + superlative', /\bquam\s+\w*(issim|errim|illim)/i],
@@ -3706,6 +3842,24 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
 
         function recordTypedResult(correct) {
             state.quiz.results.push({ correct });
+
+            // Keep what was actually missed, so it can be re-drilled later.
+            // Getting a question wrong once is the clearest possible signal
+            // about what to practise, and it was being thrown away.
+            if (!correct && q.prompt && q.target) {
+                state.mistakes = state.mistakes || [];
+                const already = state.mistakes.findIndex(m => m.prompt === q.prompt);
+                if (already >= 0) {
+                    state.mistakes[already].misses++;
+                    state.mistakes[already].at = Date.now();
+                } else {
+                    state.mistakes.push({ type: q.type, prompt: q.prompt, target: q.target,
+                                          yours: userAns, misses: 1, at: Date.now() });
+                }
+                // Oldest first out, so the list stays a working set rather than
+                // an archive.
+                if (state.mistakes.length > 120) state.mistakes = state.mistakes.slice(-120);
+            }
         }
 
         function updateStreak() {
@@ -3774,6 +3928,7 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
 
         async function init() {
             loadState();
+            applyTheme(state.settings.theme);
             await hydrateImages();
             render();
         }
