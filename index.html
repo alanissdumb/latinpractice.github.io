@@ -155,7 +155,7 @@
             wordBank: [],
             quiz: { active: false, type: '', questions: [], index: 0, isInfinite: false, results: [], answered: false },
             mistakes: [],
-            practice: { focusTopic: '', usedExamples: [], weakSpots: '' },
+            practice: { focusTopic: '', usedExamples: [], weakSpots: '', disabledSources: [] },
             // Practice sentences that are NOT the teacher's own work. Kept
             // apart from styleExamples on purpose: they may be used as
             // skeletons, but must never feed the measured teacher profile, or
@@ -613,15 +613,28 @@
             return false;
         }
 
+        const DEFAULT_SOURCE = 'Typed or pasted';
+
         function parseVocab() {
             const lines = state.materials.rawText.split('\n');
             state.materials.vocabList = [];
+            // The import already writes a "--- filename (N cards) ---" banner
+            // above each block it adds. That was being skipped as noise; it is
+            // actually the only record of where a word came from, so read it.
+            let currentSource = DEFAULT_SOURCE;
             lines.forEach(line => {
                 if (!line.trim()) return;
                 // Comment and separator lines. Without this, a heading like
                 // "# Numbers 1-10" is read as a vocab pair on its dash and
                 // lands in the corpus as a fake word.
                 const t = line.trim();
+                const banner = t.match(/^-{2,}\s*(.+?)\s*-{2,}$/);
+                if (banner) {
+                    // "Latin Nouns.apkg (273 cards)" -> "Latin Nouns"
+                    currentSource = banner[1].replace(/\s*\(\d+\s*cards?\)\s*$/i, '')
+                                             .replace(/\.(apkg|colpkg|pdf|txt|csv)$/i, '').trim() || DEFAULT_SOURCE;
+                    return;
+                }
                 if (t.startsWith('#') || t.startsWith('//') || /^[-=_*]{3,}$/.test(t) || /^---/.test(t)) return;
                 const split = splitVocabLine(line);
                 if (!split) return;
@@ -639,7 +652,7 @@
                 const norm = normalizeVocabEntry(latin, english);
                 if (norm) { latin = norm.latin; english = norm.english; }
                 if (latin && english) {
-                    const entry = { latin, english, pos: (norm && norm.pos) || classifyPos(latin, english), id: Date.now() + Math.random() };
+                    const entry = { latin, english, pos: (norm && norm.pos) || classifyPos(latin, english), source: currentSource, id: Date.now() + Math.random() };
                     if (norm && norm.govCase) entry.govCase = norm.govCase;
                     // Apply any prior AI enrichment (semantic category, word
                     // associations) for this exact headword, so it survives
@@ -856,6 +869,29 @@
                     </div>
                 </div>` : ''}
 
+                ${vocabSources().length > 1 ? `
+                <details class="bg-white rounded-2xl border border-stone-200 shadow-sm">
+                    <summary class="p-4 cursor-pointer text-sm font-bold text-stone-700 flex items-center justify-between">
+                        <span><i class="fa-solid fa-layer-group text-sage-600 mr-2"></i>Vocabulary sources</span>
+                        <span class="text-xs font-normal text-stone-400">${activeVocab(state.materials.vocabList).length} of ${state.materials.vocabList.length} words in use</span>
+                    </summary>
+                    <div class="px-4 pb-4">
+                        <p class="text-xs text-stone-500 mb-3">Only the ticked sources are used to build questions.</p>
+                        <div class="space-y-1.5">
+                            ${vocabSources().map(([name, count]) => `
+                                <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-stone-50 cursor-pointer">
+                                    <input type="checkbox" ${sourceEnabled(name) ? 'checked' : ''} onchange="toggleSource('${name.replace(/'/g, "\\'")}')" class="rounded border-stone-300">
+                                    <span class="flex-1 text-sm text-stone-700">${escapeHtml(name)}</span>
+                                    <span class="text-xs text-stone-400">${count}</span>
+                                </label>`).join('')}
+                        </div>
+                        <div class="flex gap-2 mt-3">
+                            <button onclick="setAllSources(true)" class="text-xs font-bold text-stone-600 border border-stone-300 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition">Use all</button>
+                            <button onclick="setAllSources(false)" class="text-xs font-bold text-stone-600 border border-stone-300 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition">Only the first</button>
+                        </div>
+                    </div>
+                </details>` : ''}
+
                 <details class="bg-white rounded-2xl border border-stone-200 shadow-sm" ${state.practice.weakSpots ? '' : 'open'}>
                     <summary class="p-4 cursor-pointer text-sm font-bold text-stone-700 flex items-center justify-between">
                         <span><i class="fa-solid fa-bullseye text-terracotta-500 mr-2"></i>Weak spots</span>
@@ -1039,6 +1075,7 @@
                                             <strong class="text-stone-900">${escapeHtml(v.latin)}</strong>
                                             <span class="text-stone-600 text-right">${escapeHtml(v.english)}</span>
                                             <span class="text-[9px] text-stone-400 uppercase tracking-wide flex-shrink-0">${(v.pos || '').slice(0, 3)}</span>
+                                            <span class="text-[9px] text-stone-300 flex-shrink-0 hidden sm:inline" title="${escapeHtml(v.source || DEFAULT_SOURCE)}">${escapeHtml((v.source || DEFAULT_SOURCE).slice(0, 14))}</span>
                                         </li>
                                     `).join('')}
                                 </ul>
@@ -1295,6 +1332,53 @@
         }
 
         // ==================== ACTIONS ====================
+
+        // Every distinct source in the corpus, with a count.
+        function vocabSources() {
+            const counts = {};
+            (state.materials.vocabList || []).forEach(v => {
+                const src = v.source || DEFAULT_SOURCE;
+                counts[src] = (counts[src] || 0) + 1;
+            });
+            return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        }
+
+        // An empty disabled list means everything is in use. Storing what's
+        // switched OFF rather than ON means a newly imported deck is included
+        // automatically instead of silently sitting out until it's ticked.
+        function sourceEnabled(src) {
+            return !(state.practice.disabledSources || []).includes(src || DEFAULT_SOURCE);
+        }
+
+        function toggleSource(src) {
+            const off = state.practice.disabledSources || [];
+            const i = off.indexOf(src);
+            if (i >= 0) off.splice(i, 1); else off.push(src);
+            // Never let the last source be switched off — that would leave
+            // generation with no vocabulary at all and no obvious cause.
+            const anyLeft = vocabSources().some(([name]) => !off.includes(name));
+            if (!anyLeft) { off.splice(off.indexOf(src), 1); alert('At least one source has to stay switched on.'); }
+            state.practice.disabledSources = off;
+            saveState();
+            render();
+        }
+
+        function setAllSources(on) {
+            state.practice.disabledSources = on ? [] : vocabSources().slice(1).map(([name]) => name);
+            saveState();
+            render();
+        }
+
+        // Words from the sources currently switched on.
+        function activeVocab(list) {
+            const off = state.practice.disabledSources || [];
+            if (off.length === 0) return list;
+            const filtered = list.filter(v => !off.includes(v.source || DEFAULT_SOURCE));
+            // If a filter would leave nothing usable (e.g. the word bank
+            // predates source tagging), fall back to everything rather than
+            // generating from an empty list.
+            return filtered.length > 0 ? filtered : list;
+        }
 
         function weakSpotCount() {
             return String(state.practice.weakSpots || '').split('\n').filter(l => l.trim()).length;
@@ -2977,7 +3061,8 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
             // Copy, don't alias: the old code pushed placeholder words straight
             // into state.materials.vocabList when the list was empty, which
             // permanently polluted the saved corpus with "puella"/"bonus".
-            const source = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
+            const pool = state.wordBank.length > 0 ? state.wordBank : state.materials.vocabList;
+            const source = activeVocab(pool);
             const vocab = source.length > 0 ? source.slice() : [
                 { latin: 'puella, puellae', english: 'girl', pos: 'noun' },
                 { latin: 'nuntius, nuntii', english: 'messenger', pos: 'noun' },
