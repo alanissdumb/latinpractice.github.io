@@ -160,7 +160,11 @@
             // apart from styleExamples on purpose: they may be used as
             // skeletons, but must never feed the measured teacher profile, or
             // that profile slowly stops describing the teacher.
-            extraSentences: ''
+            extraSentences: '',
+            // Phrases are a separate exam section with their own shape
+            // (preposition + adjective + noun), so they need their own bank
+            // rather than being derived from sentence examples.
+            phraseExamples: ''
         };
 
         let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -179,6 +183,7 @@
                     if (parsed.stats) state.stats = { ...DEFAULT_STATE.stats, ...parsed.stats };
                     if (parsed.practice) state.practice = { ...DEFAULT_STATE.practice, ...parsed.practice };
                     if (typeof parsed.extraSentences === 'string') state.extraSentences = parsed.extraSentences;
+                    if (typeof parsed.phraseExamples === 'string') state.phraseExamples = parsed.phraseExamples;
                     if (Array.isArray(parsed.mistakes)) state.mistakes = parsed.mistakes;
                     // Anyone upgrading has a single connection configured but
                     // no profiles — turn it into the first profile so they
@@ -892,6 +897,17 @@
                     </div>
                 </details>` : ''}
 
+                ${(state.wordBank || []).length > 0 ? `
+                <div class="bg-white border border-stone-200 rounded-2xl p-4 flex items-center justify-between gap-3 flex-wrap shadow-sm">
+                    <div>
+                        <div class="font-bold text-stone-800 text-sm"><i class="fa-solid fa-layer-group text-sage-600 mr-2"></i>Flashcards</div>
+                        <p class="text-xs text-stone-500 mt-0.5">
+                            ${cardCounts().due} due now · ${cardCounts().learning} still learning · ${cardCounts().known} known
+                        </p>
+                    </div>
+                    <button onclick="startFlashcards()" class="px-4 py-2 bg-sage-500 hover:bg-sage-600 text-white text-sm font-bold rounded-lg transition">Study</button>
+                </div>` : ''}
+
                 <details class="bg-white rounded-2xl border border-stone-200 shadow-sm" ${state.practice.weakSpots ? '' : 'open'}>
                     <summary class="p-4 cursor-pointer text-sm font-bold text-stone-700 flex items-center justify-between">
                         <span><i class="fa-solid fa-bullseye text-terracotta-500 mr-2"></i>Weak spots</span>
@@ -921,8 +937,71 @@
             </div>`;
         }
 
+        // A flashcard is not a typing test: you look, recall, reveal, and say
+        // how it went. Typing every answer is slower and grades spelling
+        // rather than recall, which is not what this drill is for.
+        function viewFlashcard(q) {
+            const counts = cardCounts();
+            const done = state.quiz.index;
+            const total = state.quiz.questions.length;
+            const card = q.card;
+            const ratings = [
+                { key: 'again', label: 'Again', cls: 'bg-terracotta-600 hover:bg-terracotta-700 text-white', hint: '1' },
+                { key: 'hard',  label: 'Hard',  cls: 'bg-stone-200 hover:bg-stone-300 text-stone-700', hint: '2' },
+                { key: 'good',  label: 'Good',  cls: 'bg-sage-500 hover:bg-sage-600 text-white', hint: '3' },
+                { key: 'easy',  label: 'Easy',  cls: 'bg-stone-800 hover:bg-black text-white', hint: '4' }
+            ];
+            return `
+            <div class="animate-fade-in max-w-2xl mx-auto">
+                <div class="flex items-center justify-between mb-6">
+                    <button onclick="navigateTo('practice_select')" class="text-stone-500 hover:text-stone-800 bg-white border border-stone-200 w-10 h-10 rounded-full flex items-center justify-center shadow-sm">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                    <div class="text-xs font-bold text-stone-400 uppercase tracking-widest">Flashcards</div>
+                    <div class="text-xs text-stone-400">${done} / ${total}</div>
+                </div>
+
+                <div class="bg-white rounded-[2rem] shadow-lg border border-stone-200 p-8 sm:p-12 text-center min-h-[300px] flex flex-col justify-center">
+                    <div class="text-[10px] uppercase tracking-widest text-stone-400 mb-4">
+                        ${card.stage === 'review' ? 'Review' : 'Learning'}${card.lapses ? ` · lapsed ${card.lapses}x` : ''}
+                    </div>
+                    <h2 class="text-3xl sm:text-4xl font-classical font-bold text-stone-800 leading-snug">${escapeHtml(q.prompt)}</h2>
+                    ${state.quiz.revealed ? `
+                        <div class="mt-6 pt-6 border-t border-stone-200">
+                            <p class="text-2xl font-serif text-sage-700">${escapeHtml(q.target)}</p>
+                            ${card.pos ? `<p class="text-[11px] uppercase tracking-widest text-stone-400 mt-2">${card.pos}</p>` : ''}
+                        </div>` : `
+                        <p class="text-stone-400 text-sm font-serif italic mt-6">Recall it, then reveal.</p>`}
+                </div>
+
+                <div class="mt-6">
+                    ${state.quiz.revealed ? `
+                        <div class="grid grid-cols-4 gap-2">
+                            ${ratings.map(r => `
+                                <button onclick="rateCard('${r.key}')" class="${r.cls} rounded-xl py-3 font-bold text-sm transition flex flex-col items-center">
+                                    ${r.label}
+                                    <span class="text-[10px] font-normal opacity-70 mt-0.5">${intervalPreview(card, r.key)}</span>
+                                </button>`).join('')}
+                        </div>
+                        <p class="text-[10px] text-stone-400 text-center mt-3">Press 1-4, or Space to reveal the next card.</p>
+                    ` : `
+                        <button onclick="revealCard()" class="w-full bg-stone-900 hover:bg-black text-white font-bold py-4 rounded-xl transition">Show answer</button>
+                        <p class="text-[10px] text-stone-400 text-center mt-3">Press Space or Enter.</p>
+                    `}
+                </div>
+
+                <div class="mt-6 flex justify-center gap-6 text-xs text-stone-400">
+                    <span><strong class="text-stone-600">${counts.due}</strong> due</span>
+                    <span><strong class="text-stone-600">${counts.learning}</strong> learning</span>
+                    <span><strong class="text-stone-600">${counts.known}</strong> known</span>
+                    <span><strong class="text-stone-600">${counts.total}</strong> total</span>
+                </div>
+            </div>`;
+        }
+
         function viewQuiz() {
             const q = state.quiz.questions[state.quiz.index];
+            if (q && q.type === 'flashcard') return viewFlashcard(q);
             if (!q) return `
                 <div class="max-w-lg mx-auto text-center py-24">
                     <div class="w-16 h-16 border-4 border-sage-200 border-t-sage-600 rounded-full animate-spin mx-auto mb-6"></div>
@@ -1138,6 +1217,10 @@
                     <h3 class="font-classical font-bold text-lg mb-1">Extra Practice Sentences</h3>
                     <p class="text-xs text-stone-500 font-serif italic mb-3">Sentences that are NOT your teacher's own work \u2014 generated, or from a textbook. Used as models for new questions, but deliberately excluded from the learned style profile so that profile keeps describing your teacher.</p>
                     <textarea id="extraSentencesArea" rows="6" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.extraSentences || '')}</textarea>
+
+                    <h3 class="font-classical font-bold text-lg mb-1">Phrases</h3>
+                    <p class="text-xs text-stone-500 font-serif italic mb-3">Short phrases from your tests, written <span class="font-mono not-italic">latin = english</span> like the boxes above \u2014 e.g. <span class="font-mono not-italic">sine multa spe = without much hope</span>. Used for the phrase drills, which need a different shape from full sentences.</p>
+                    <textarea id="phraseExamplesArea" rows="6" placeholder="sine multa spe = without much hope" class="w-full text-sm font-mono p-4 bg-stone-50 border border-stone-300 rounded-xl focus:ring-2 focus:ring-sage-500 focus:outline-none custom-scrollbar mb-4">${escapeHtml(state.phraseExamples || '')}</textarea>
                     <button onclick="saveMaterials()" class="w-full sm:w-auto bg-sage-600 hover:bg-sage-700 text-white font-bold py-3 px-8 rounded-xl shadow transition">Save Style Examples</button>
                 </div>
             </div>`;
@@ -1501,6 +1584,8 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
             if (eArea) state.materials.styleExamples = eArea.value;
             const xArea = document.getElementById('extraSentencesArea');
             if (xArea) state.extraSentences = xArea.value;
+            const pArea = document.getElementById('phraseExamplesArea');
+            if (pArea) state.phraseExamples = pArea.value;
             parseVocab();
             saveState();
             render();
@@ -1927,6 +2012,59 @@ Return ONLY JSON: {"vocab": ["latin dictionary form - english meaning", ...]}`;
         function clearMistakes() {
             if (!confirm('Clear the whole list of recorded mistakes?')) return;
             state.mistakes = [];
+            saveState();
+            render();
+        }
+
+        // Anki-style flashcard review over the word bank. Entirely local.
+        function startFlashcards() {
+            const pool = activeVocab(dueCards());
+            if (pool.length === 0) {
+                const next = (state.wordBank || []).map(c => c.due || 0).filter(Boolean).sort((a, b) => a - b)[0];
+                alert(next ? `Nothing due right now. The next card is ready in ${humanInterval(next - Date.now())}.`
+                           : 'No cards in your word bank yet — save some vocabulary in Materials first.');
+                return;
+            }
+            state.quiz = {
+                active: true, type: 'flashcard',
+                questions: shuffled(pool).slice(0, 40).map(c => ({ type: 'flashcard', card: c,
+                    prompt: state.settings.vocabDirection === 'latToEng' ? c.latin : c.english,
+                    target: state.settings.vocabDirection === 'latToEng' ? c.english : c.latin })),
+                index: 0, isInfinite: false, results: [], answered: false, revealed: false
+            };
+            state.view = 'quiz';
+            saveState();
+            render();
+        }
+
+        function revealCard() {
+            state.quiz.revealed = true;
+            render();
+        }
+
+        function rateCard(rating) {
+            const q = state.quiz.questions[state.quiz.index];
+            if (!q || !q.card) return;
+            // Find the live card in the word bank, not the copy in the queue.
+            const card = (state.wordBank || []).find(c => c.latin === q.card.latin) || q.card;
+            scheduleCard(card, rating);
+            state.quiz.results.push({ correct: rating !== 'again' });
+
+            // "Again" puts the card back later in this same session, which is
+            // what makes a card stick within one sitting rather than being
+            // marked wrong and forgotten until tomorrow.
+            if (rating === 'again') {
+                const requeueAt = Math.min(state.quiz.index + 5, state.quiz.questions.length);
+                state.quiz.questions.splice(requeueAt, 0, q);
+            }
+
+            state.quiz.index++;
+            state.quiz.revealed = false;
+            if (state.quiz.index >= state.quiz.questions.length) {
+                const c = cardCounts();
+                alert(`Session finished.\n${state.quiz.results.length} cards reviewed.\n${c.due} still due.`);
+                state.view = 'practice_select';
+            }
             saveState();
             render();
         }
@@ -2629,7 +2767,11 @@ ${rawText.substring(0, 6000)}
                 if (/ae$/.test(gen) && /a$/.test(nom)) return 'f';
                 if (/i$/.test(gen) && /(us|er)$/.test(nom)) return 'm';
                 if (/i$/.test(gen) && /um$/.test(nom)) return 'n';
-                return null; // 3rd/4th/5th — gender isn't derivable from form
+                // 4th declension (portus, portus) is masculine apart from a
+                // short list; 5th (spes, spei) is feminine apart from dies.
+                if (/us$/.test(gen) && /us$/.test(nom)) return /^(manus|domus|porticus|tribus|acus)$/.test(nom) ? 'f' : 'm';
+                if (/ei$/.test(gen) && /es$/.test(nom)) return /^dies$/.test(nom) ? 'm' : 'f';
+                return null; // 3rd declension — genuinely not derivable
             }
             if (/a$/.test(nom)) return 'f';
             if (/us$|er$/.test(nom)) return 'm';
@@ -2777,24 +2919,162 @@ ${rawText.substring(0, 6000)}
             c => (c.sAnimate && c.Spl) && ({ lat: `${c.Spl.nom} ${c.place.acc} festinaverunt ut ${c.Oa} ${c.v.presSubj3pl}.`, eng: `The ${c.sEnPl} hurried ${c.place.engTo} in order to ${c.vEn} the ${c.oEn}.` })
         ];
 
+        // Prepositions grouped by the case they govern, so a phrase can be
+        // built that is actually grammatical.
+        const PREPS_ACC = [
+            { lat: 'trans', eng: 'across' }, { lat: 'per', eng: 'through' },
+            { lat: 'contra', eng: 'against' }, { lat: 'circum', eng: 'around' },
+            { lat: 'ad', eng: 'to' }, { lat: 'ante', eng: 'in front of' },
+            { lat: 'post', eng: 'behind' }, { lat: 'propter', eng: 'on account of' },
+            { lat: 'inter', eng: 'among' }, { lat: 'prope', eng: 'near' }
+        ];
+        const PREPS_ABL = [
+            { lat: 'sine', eng: 'without' }, { lat: 'cum', eng: 'with' },
+            { lat: 'de', eng: 'about' }, { lat: 'ex', eng: 'out of' },
+            { lat: 'pro', eng: 'on behalf of' }, { lat: 'sub', eng: 'under' },
+            { lat: 'in', eng: 'in' }
+        ];
+
+        // Comparative and superlative of an adjective entry, with the English.
+        // Returns null when the form can't be derived confidently, so a wrong
+        // ending is never shown.
+        function adjForms(entry) {
+            const nom = headword(entry.latin);
+            const eng = gloss(entry.english);
+            const stem = /us$/i.test(nom) ? nom.slice(0, -2)
+                       : /is$/i.test(nom) ? nom.slice(0, -2)
+                       : /er$/i.test(nom) ? nom
+                       : null;
+            if (!stem) return null;
+            const IRREG = {
+                bonus: ['melior', 'melius', 'optimus', 'better', 'best'],
+                magnus: ['maior', 'maius', 'maximus', 'bigger', 'biggest'],
+                malus: ['peior', 'peius', 'pessimus', 'worse', 'worst'],
+                parvus: ['minor', 'minus', 'minimus', 'smaller', 'smallest'],
+                multus: ['plures', 'plura', 'plurimus', 'more', 'very many']
+            };
+            const ir = IRREG[nom.toLowerCase()];
+            // plus/plures declines unlike any other comparative, so this word
+            // is used only in the positive.
+            const noCompare = /^(multus|multi|plus)$/i.test(nom);
+            // "more high" is not English. Short adjectives take -er / -est.
+            const shortAdj = eng.length <= 6 && !/ous$|ful$|ing$|ed$|ble$/i.test(eng);
+            const dbl = /^(big|sad|hot|thin|fat|wet)$/i.test(eng) ? eng + eng.slice(-1) : eng;
+            const cmpEng = shortAdj ? (/e$/i.test(eng) ? eng + 'r' : /[^aeiou]y$/i.test(eng) ? eng.slice(0, -1) + 'ier' : dbl + 'er') : 'more ' + eng;
+            const supEng = shortAdj ? (/e$/i.test(eng) ? eng + 'st' : /[^aeiou]y$/i.test(eng) ? eng.slice(0, -1) + 'iest' : dbl + 'est') : 'very ' + eng;
+            // -er adjectives form the superlative on the nominative, not the stem.
+            const sup = /er$/i.test(nom) ? nom + 'rimus'
+                      : /^(facilis|difficilis|similis|dissimilis|gracilis|humilis)$/i.test(nom) ? stem + 'limus'
+                      : stem + 'issimus';
+            return {
+                pos: { m: nom, f: /us$/i.test(nom) ? stem + 'a' : nom, n: /us$/i.test(nom) ? stem + 'um' : nom, eng },
+                noCompare,
+                cmp: ir ? { m: ir[0], n: ir[1], eng: ir[3] } : { m: stem + 'ior', n: stem + 'ius', eng: cmpEng },
+                sup: ir ? { m: ir[2], eng: ir[4] } : { m: sup, eng: supEng }
+            };
+        }
+
+        // Agreement endings for a 1st/2nd declension adjective in the case and
+        // gender wanted. Only the cases phrases actually use.
+        function adjAgree(base, gender, kase, isComp) {
+            // "minor", "maior" and "plures" are comparatives that don't all
+            // end -ior, so the caller states it rather than the code guessing.
+            const isComparative = isComp === true || /(ior|ius)$/i.test(base);
+            const stem = isComparative ? base.replace(/(ior|ius|or|us|es)$/i, '') : base.replace(/(us|a|um)$/i, '');
+            if (isComparative) {
+                // 3rd declension, not an i-stem: acc -iorem, abl -iore.
+                if (kase === 'acc') return gender === 'n' ? stem + 'ius' : stem + 'iorem';
+                if (kase === 'abl') return stem + 'iore';
+                return gender === 'n' ? stem + 'ius' : stem + 'ior';
+            }
+            if (kase === 'acc') return gender === 'f' ? stem + 'am' : gender === 'n' ? stem + 'um' : stem + 'um';
+            if (kase === 'abl') return gender === 'f' ? stem + 'a' : stem + 'o';
+            return gender === 'f' ? stem + 'a' : gender === 'n' ? stem + 'um' : stem + 'us';
+        }
+
+        const ORDINALS = [
+            { stem: 'prim', eng: 'first' }, { stem: 'secund', eng: 'second' },
+            { stem: 'terti', eng: 'third' }, { stem: 'quart', eng: 'fourth' },
+            { stem: 'quint', eng: 'fifth' }, { stem: 'decim', eng: 'tenth' }
+        ];
+        const CARDINALS = [
+            { lat: 'duos', eng: 'two' }, { lat: 'tres', eng: 'three' },
+            { lat: 'quattuor', eng: 'four' }, { lat: 'septem', eng: 'seven' },
+            { lat: 'novem', eng: 'nine' }, { lat: 'decem', eng: 'ten' }
+        ];
+        const TIME_ABL = [
+            { lat: 'die', eng: 'day', prep: 'on the', g: 'm' },
+            { lat: 'mense', eng: 'month', prep: 'in the', g: 'm' },
+            { lat: 'anno', eng: 'year', prep: 'in the', g: 'm' },
+            { lat: 'hora', eng: 'hour', prep: 'at the', g: 'f' },
+            { lat: 'nocte', eng: 'night', prep: 'on the', g: 'f' }
+        ];
+        const TIME_ACC = [
+            { lat: 'dies', eng: 'days' }, { lat: 'annos', eng: 'years' },
+            { lat: 'horas', eng: 'hours' }, { lat: 'menses', eng: 'months' }
+        ];
+        const QUAM_ADVERBS = [
+            { lat: 'quam facillime', eng: 'as easily as possible' },
+            { lat: 'quam celerrime', eng: 'as quickly as possible' },
+            { lat: 'quam diligentissime', eng: 'as diligently as possible' },
+            { lat: 'quam fortissime', eng: 'as bravely as possible' },
+            { lat: 'quam primum', eng: 'as soon as possible' }
+        ];
+        // is/hic/ille/idem in the two cases phrases need.
+        const DEMONSTRATIVES = {
+            acc: { m: [['hunc', 'this'], ['illum', 'that'], ['eundem', 'the same']],
+                   f: [['hanc', 'this'], ['illam', 'that'], ['eandem', 'the same']],
+                   n: [['hoc', 'this'], ['illud', 'that'], ['idem', 'the same']] },
+            abl: { m: [['hoc', 'this'], ['illo', 'that'], ['eodem', 'the same']],
+                   f: [['hac', 'this'], ['illa', 'that'], ['eadem', 'the same']],
+                   n: [['hoc', 'this'], ['illo', 'that'], ['eodem', 'the same']] }
+        };
+
+        // Phrases, not clauses. The old patterns built miniature sentences
+        // with finite verbs in them ("he sends the letter"), which is not what
+        // this section of the paper asks for at all.
         const PHRASE_PATTERNS = [
-            c => ({ lat: `${c.Oa} ${c.v.pres3sg}`, eng: `he ${en3sg(c.vEn)} the ${c.oEn}` }),
-            c => ({ lat: `${c.Sn} ${c.v.impf3sg}`, eng: `the ${c.sEn} was ${enGerund(c.vEn)}` }),
+            // preposition + adjective + noun
+            c => (c.adj && c.oGenderKnown) && ({ lat: `${c.prepA.lat} ${adjAgree(c.adj.pos[c.oGender] || c.adj.pos.m, c.oGender, 'acc')} ${c.Oa}`,
+                             eng: `${c.prepA.eng} ${withArt(c.adj.pos.eng, c.oEn)}` }),
+            c => (c.adj && c.oGenderKnown) && ({ lat: `${c.prepB.lat} ${adjAgree(c.adj.pos[c.oGender] || c.adj.pos.m, c.oGender, 'abl')} ${c.Oabl}`,
+                             eng: `${c.prepB.eng} ${withArt(c.adj.pos.eng, c.oEn)}` }),
+            // comparative inside the phrase
+            c => (c.adj && c.oGenderKnown && !c.adj.noCompare) && ({ lat: `${c.prepA.lat} ${adjAgree(c.adj.cmp.m, c.oGender, 'acc', true)} ${c.Oa}`,
+                             eng: `${c.prepA.eng} the ${c.adj.cmp.eng} ${c.oEn}` }),
+            c => (c.adj && c.oGenderKnown && !c.adj.noCompare) && ({ lat: `${c.prepB.lat} ${adjAgree(c.adj.cmp.m, c.oGender, 'abl', true)} ${c.Oabl}`,
+                             eng: `${c.prepB.eng} the ${c.adj.cmp.eng} ${c.oEn}` }),
+            // superlative inside the phrase
+            c => (c.adj && c.oGenderKnown && !c.adj.noCompare) && ({ lat: `${c.prepB.lat} ${adjAgree(c.adj.sup.m, c.oGender, 'abl')} ${c.Oabl}`,
+                             eng: `${c.prepB.eng} the ${c.adj.sup.eng} ${c.oEn}` }),
+            c => (c.adj && c.oGenderKnown && !c.adj.noCompare) && ({ lat: `${c.prepA.lat} ${adjAgree(c.adj.sup.m, c.oGender, 'acc')} ${c.Oa}`,
+                             eng: `${c.prepA.eng} the ${c.adj.sup.eng} ${c.oEn}` }),
+            // demonstrative + noun
+            c => c.oGenderKnown && ({ lat: `${c.prepB.lat} ${c.demAbl[0]} ${c.Oabl}`, eng: `${c.prepB.eng} ${c.demAbl[1]} ${c.oEn}` }),
+            c => c.oGenderKnown && ({ lat: `${c.prepA.lat} ${c.demAcc[0]} ${c.Oa}`, eng: `${c.prepA.eng} ${c.demAcc[1]} ${c.oEn}` }),
+            // genitive
             c => ({ lat: `${c.On} ${c.Sg}`, eng: `the ${c.oEn} of the ${c.sEn}` }),
-            c => ({ lat: `cum ${c.Sabl}`, eng: `with the ${c.sEn}` }),
-            c => ({ lat: `sine ${c.Sabl}`, eng: `without the ${c.sEn}` }),
-            c => ({ lat: `${c.Sd} ${c.Oa} ${c.v.pres3sg}`, eng: `he ${en3sg(c.vEn)} the ${c.oEn} to the ${c.sEn}` }),
-            c => ({ lat: `${c.Oa} ${c.v.inf}`, eng: `to ${c.vEn} the ${c.oEn}` }),
-            c => c.Spl && ({ lat: `${c.Spl.nom} ${c.v.pres3pl}`, eng: `the ${c.sEnPl} ${c.vEn}` }),
-            c => ({ lat: `${c.place.acc}`, eng: `${c.place.engTo}` }),
-            c => ({ lat: `${c.Sn} ${c.place.abl}`, eng: `the ${c.sEn} ${c.place.eng}` }),
-            c => c.v.perf3sg && ({ lat: `${c.Sn} ${c.v.perf3sg}`, eng: `the ${c.sEn} ${enPast(c.vEn)}` }),
-            c => ({ lat: `${c.adv.lat} ${c.v.pres3pl}`, eng: `they ${c.adv.eng} ${c.vEn}` })
+            // time when / how long
+            c => ({ lat: `${c.ord.stem + (c.timeAbl.g === 'f' ? 'a' : 'o')} ${c.timeAbl.lat}`,
+                    eng: `${c.timeAbl.prep} ${c.ord.eng} ${c.timeAbl.eng}` }),
+            c => ({ lat: `${c.card.lat} ${c.timeAcc.lat}`, eng: `for ${c.card.eng} ${c.timeAcc.eng}` }),
+            // quam + superlative adverb
+            c => ({ lat: c.quam.lat, eng: c.quam.eng }),
+            // bare noun phrase with the case named, as the teacher writes it
+            c => (c.adj && c.oGenderKnown) && ({ lat: `${adjAgree(c.adj.pos[c.oGender] || c.adj.pos.m, c.oGender, 'acc')} ${c.Oa}`,
+                             eng: `${withArt(c.adj.pos.eng, c.oEn)} (acc.)` }),
+            c => (c.Opl && c.oGenderKnown) && ({ lat: `${c.oGender === 'f' ? 'multas' : c.oGender === 'n' ? 'multa' : 'multos'} ${c.Opl.acc}`,
+                                                 eng: `many ${pluralEn(c.oEn)} (acc.)` })
         ];
 
         // Ablative singular of a perfect participle: -us/-um -> -o, -a -> -a.
         function abl(participle) {
             return participle.replace(/(us|um)$/i, 'o');
+        }
+
+        // "much" and "many" take no definite article in English.
+        function withArt(adjEng, nounEng) {
+            return /^(much|many|very many|more)$/i.test(adjEng) ? `${adjEng} ${nounEng}` : `the ${adjEng} ${nounEng}`;
         }
 
         function pluralEn(word) {
@@ -2816,12 +3096,17 @@ ${rawText.substring(0, 6000)}
         // Teacher sentences plus extra practice ones — used for skeletons and
         // for serving real sentences, where coverage helps and provenance
         // doesn't distort a measurement.
+        function parsePhrasePairs() {
+            // A phrase can legitimately be one word ("multa", "postridie").
+            return parsePairsFrom(state.phraseExamples, 1).filter(p => p.lat.split(/\s+/).length <= 6);
+        }
+
         function parseAllPairs() {
             return [...parsePairsFrom(state.materials.styleExamples),
                     ...parsePairsFrom(state.extraSentences)];
         }
 
-        function parsePairsFrom(src) {
+        function parsePairsFrom(src, minWords) {
             return String(src || '').split('\n')
                 .map(l => l.trim())
                 .filter(l => l && !l.startsWith('#') && !l.startsWith('---') && l.includes('='))
@@ -2832,7 +3117,7 @@ ${rawText.substring(0, 6000)}
                     if (looksEnglish(lat) && !looksEnglish(eng)) { const t = lat; lat = eng; eng = t; }
                     return { lat, eng };
                 })
-                .filter(p => p.lat && p.eng && p.lat.split(/\s+/).length >= 3);
+                .filter(p => p.lat && p.eng && p.lat.split(/\s+/).length >= (minWords === undefined ? 3 : minWords));
         }
 
         // Serve unseen examples first; once they've all been used, start the
@@ -3083,7 +3368,20 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
 
             // Roughly one in three sentence questions is a genuine past-paper
             // sentence rather than a generated one.
+            const PHRASE_TYPES = ['latToEng', 'engToLat'];
             const realQuestions = [];
+            if (PHRASE_TYPES.includes(type)) {
+                const pairs = parsePhrasePairs();
+                const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
+                takeUnusedPairs(pairs, want).forEach(p => {
+                    realQuestions.push({
+                        type,
+                        prompt: type === 'latToEng' ? p.lat : p.eng,
+                        target: type === 'latToEng' ? p.eng : p.lat,
+                        extra: '', source: 'past-paper'
+                    });
+                });
+            }
             if (SENTENCE_TYPES.includes(type) && type !== 'unseen') {
                 const pairs = parseStylePairs();
                 const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
@@ -3144,9 +3442,17 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
                     // instead of hoping for it.
                     let styleContext = '';
                     let assignedSkeletons = [];
-                    const allPairs = parseAllPairs();
+                    // Phrase drills learn from the phrase bank; sentence drills
+                    // from the sentence bank. Mixing them was why phrases kept
+                    // coming out as miniature sentences with verbs in them.
+                    const allPairs = PHRASE_TYPES.includes(type) ? parsePhrasePairs() : parseAllPairs();
                     if (allPairs.length) {
-                        if (SENTENCE_TYPES.includes(type)) {
+                        if (PHRASE_TYPES.includes(type)) {
+                            const pool = shuffled(allPairs);
+                            for (let i = 0; i < aiCount; i++) assignedSkeletons.push(pool[i % pool.length]);
+                            styleContext = `\n\nPHRASE MODELS — real phrases set by this student's teacher, ASSIGNED one per question. Question N must have the same grammatical shape as model N (same kind of preposition or case, same use of adjective, demonstrative or comparative), but different words.
+${assignedSkeletons.map((p, i) => `${i + 1}. ${p.eng} = ${p.lat}`).join('\n')}`;
+                        } else if (SENTENCE_TYPES.includes(type)) {
                             const pool = shuffled(allPairs);
                             for (let i = 0; i < aiCount; i++) assignedSkeletons.push(pool[i % pool.length]);
                             // A wider reference pool so the vocabulary rule below
@@ -3180,7 +3486,17 @@ ${weak.map(w => '- ' + w).join('\n')}` : '';
                     const lengthInstruction = (type === 'latSentence' || type === 'engSentence')
                         ? '\nEach question must be a FULL, grammatically complete sentence with a subordinate clause, participle, ablative absolute, or passive/deponent verb where appropriate. No 3-4 word phrases.'
                         : (type === 'latToEng' || type === 'engToLat')
-                            ? '\nEach question is a SHORT phrase or single short clause — a prepositional phrase, a noun with its genitive, a verb with its object. Not a full multi-clause sentence.'
+                            ? `\nEach question is a SHORT PHRASE of two to five words — NOT a clause and NOT a sentence. There must be NO FINITE VERB in it.
+This student's teacher sets phrases of exactly these kinds, so build yours the same way:
+- preposition + adjective + noun, in the case the preposition governs: "trans longius flumen" (across the longer river), "per altissimas arbores" (through the highest trees), "contra ingens oppidum" (against the huge town), "sine multa spe" (without much hope)
+- a demonstrative with its noun: "sine hoc exercitu" (without this army), "de hac re publica" (about this republic), "per easdem urbes" (through the same cities), "eiusdem senatus" (of the same senate)
+- a COMPARATIVE or SUPERLATIVE adjective inside the phrase: "in maiore proelio" (in the bigger battle), "per minores fluctus" (through the smaller waves), "in maximo periculo" (in the greatest danger), "in portu minimo" (in the very small harbour)
+- time expressions: ablative for time when ("primo die" on the first day, "quinto mense" in the fifth month), accusative for how long ("duos dies" for two days, "multos annos" for many years)
+- ordinal + noun: "in secundo gradu" (on the second step), "decima legio" (the tenth legion)
+- a bare noun phrase in a named case, with the case given in the English: "multos tumultus" (many riots (acc.)), "plus libertatis" (more freedom)
+- quam + superlative adverb: "quam facillime" (as easily as possible), "quam celerrime" (as quickly as possible)
+Use 4th and 5th declension nouns too (gradus, exercitus, portus, fluctus, res, spes, dies), because the teacher does.
+Where the English is ambiguous about case, add it in brackets as the teacher does: "many things (acc.)".`
                             : (type === 'unseen')
                                 ? '\nEach question is a short connected passage of 3-4 sentences telling a small story, with the whole English translation as the target.'
                                 : '';
@@ -3354,6 +3670,8 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             // Prefer AI-indexed collocate pairs (verb + a noun it genuinely
             // goes with) so the sentence means something, but fall back to a
             // random pairing when nothing is indexed yet.
+            // Adjectives that can actually be inflected for a phrase.
+            const adjPool = adjectives.filter(a => adjForms(a));
             const animateNouns = usableNouns.filter(isAnimate);
             const thingNouns = usableNouns.filter(n => !isAnimate(n));
 
@@ -3395,9 +3713,27 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
                     Sn: sForms[0], Sa: sForms[2], Sg: sForms[3], Sd: sForms[4], Sabl: sForms[5],
                     On: oForms[0], Oa: oForms[2], Og: oForms[3], Od: oForms[4], Oabl: oForms[5],
                     Spl: pluralForms(subj.latin),
-                    oGender: guessGender(obj.latin),
+                    // Fall back to masculine rather than undefined, so a
+                    // phrase is never built with an undefined ending.
+                    oGender: guessGender(obj.latin) || 'm',
+                    // An adjective agreeing with a GUESSED gender is a wrong
+                    // answer, and a wrong answer is worse than a narrower
+                    // pattern bank — so record whether it's actually known.
+                    oGenderKnown: !!guessGender(obj.latin),
                     place: rand(places.length ? places : PLACES),
-                    adv: rand(ADVERBS)
+                    adv: rand(ADVERBS),
+                    // Extra material the phrase patterns need.
+                    Opl: pluralForms(obj.latin),
+                    adj: adjPool.length ? adjForms(rand(adjPool)) : null,
+                    prepA: rand(PREPS_ACC),
+                    prepB: rand(PREPS_ABL),
+                    ord: rand(ORDINALS),
+                    card: rand(CARDINALS),
+                    timeAbl: rand(TIME_ABL),
+                    timeAcc: rand(TIME_ACC),
+                    quam: rand(QUAM_ADVERBS),
+                    demAcc: rand(DEMONSTRATIVES.acc[guessGender(obj.latin) || 'm']),
+                    demAbl: rand(DEMONSTRATIVES.abl[guessGender(obj.latin) || 'm'])
                 };
             }
 
@@ -3560,7 +3896,25 @@ Return ONLY JSON: {"questions": [{"type":"${type}", "prompt":"...", "target":"..
             return shuffled([...realQuestions, ...questions]);
         }
 
+        let flashKeyHandler = null;
         function attachKeybinds() {
+            // Flashcards are driven entirely from the keyboard, the way Anki
+            // is — otherwise a hundred-card session is a hundred mouse trips.
+            if (flashKeyHandler) { document.removeEventListener('keydown', flashKeyHandler); flashKeyHandler = null; }
+            const fq = state.quiz.questions[state.quiz.index];
+            if (state.quiz.active && fq && fq.type === 'flashcard') {
+                flashKeyHandler = (e) => {
+                    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+                    if (!state.quiz.revealed) {
+                        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); revealCard(); }
+                        return;
+                    }
+                    const map = { '1': 'again', '2': 'hard', '3': 'good', '4': 'easy', ' ': 'good', 'Enter': 'good' };
+                    if (map[e.key]) { e.preventDefault(); rateCard(map[e.key]); }
+                };
+                document.addEventListener('keydown', flashKeyHandler);
+                return;
+            }
             const std = document.getElementById('ans_standard');
             const vcb = document.getElementById('ans_vocab');
             
@@ -3667,6 +4021,119 @@ Answer their specific question clearly and directly, like a teacher explaining a
                 .replace(/`([^`]+)`/g, '<code class="bg-stone-200 rounded px-1">$1</code>')
                 .replace(/\n{2,}/g, '</p><p class="mt-2">')
                 .replace(/\n/g, '<br>');
+        }
+
+        // ==================== SPACED REPETITION ====================
+        // SM-2, the algorithm Anki uses, with Anki's learning steps in front
+        // of it. A card is not "known" the first time it's answered — it has
+        // to be produced correctly on separate occasions, with a growing gap
+        // between them, before it goes away for good.
+        const MINUTE = 60 * 1000, DAY = 24 * 60 * MINUTE;
+        // Learning steps. A new card has to be produced correctly THREE times,
+        // on separate occasions with a growing gap, before it graduates into
+        // the long-interval schedule: once now, again ten minutes later, and
+        // again the next day. Two steps (Anki's default) graduates a card the
+        // same afternoon, which is not the same as knowing it.
+        const LEARNING_STEPS = [1 * MINUTE, 10 * MINUTE, 1 * DAY];
+        const GRADUATED_INTERVAL = 3 * DAY;
+
+        function newCardState() {
+            return { stage: 'learning', step: 0, interval: 0, ease: 2.5, reps: 0, lapses: 0, due: Date.now() };
+        }
+
+        function ensureSchedule(card) {
+            if (!card.stage) Object.assign(card, newCardState(), { latin: card.latin, english: card.english, pos: card.pos, source: card.source });
+            return card;
+        }
+
+        // rating: 'again' | 'hard' | 'good' | 'easy'
+        function scheduleCard(card, rating) {
+            ensureSchedule(card);
+            const now = Date.now();
+            card.reps = (card.reps || 0) + 1;
+
+            if (card.stage === 'learning') {
+                if (rating === 'again') {
+                    card.step = 0;
+                    card.due = now + LEARNING_STEPS[0];
+                } else if (rating === 'easy') {
+                    // Easy on a new card skips the remaining steps.
+                    card.stage = 'review';
+                    card.interval = 4 * DAY;
+                    card.due = now + card.interval;
+                } else if (rating === 'hard') {
+                    card.due = now + LEARNING_STEPS[Math.min(card.step, LEARNING_STEPS.length - 1)];
+                } else { // good
+                    card.step = (card.step || 0) + 1;
+                    if (card.step >= LEARNING_STEPS.length) {
+                        card.stage = 'review';
+                        card.interval = GRADUATED_INTERVAL;
+                        card.due = now + card.interval;
+                    } else {
+                        card.due = now + LEARNING_STEPS[card.step];
+                    }
+                }
+                card.last = now;
+                return card;
+            }
+
+            // Review stage — SM-2 proper.
+            if (rating === 'again') {
+                card.lapses = (card.lapses || 0) + 1;
+                card.ease = Math.max(1.3, (card.ease || 2.5) - 0.2);
+                card.stage = 'learning';
+                card.step = 0;
+                card.interval = 0;
+                card.due = now + LEARNING_STEPS[0];
+            } else {
+                const ease = card.ease || 2.5;
+                let interval;
+                if (rating === 'hard') {
+                    card.ease = Math.max(1.3, ease - 0.15);
+                    interval = Math.max(DAY, (card.interval || DAY) * 1.2);
+                } else if (rating === 'easy') {
+                    card.ease = ease + 0.15;
+                    interval = Math.max(DAY, (card.interval || DAY) * ease * 1.3);
+                } else {
+                    interval = Math.max(DAY, (card.interval || DAY) * ease);
+                }
+                card.interval = Math.min(interval, 365 * DAY);
+                card.due = now + card.interval;
+            }
+            card.last = now;
+            return card;
+        }
+
+        // What the buttons should promise, so the choice is informed.
+        function intervalPreview(card, rating) {
+            const copy = JSON.parse(JSON.stringify(ensureSchedule(card)));
+            scheduleCard(copy, rating);
+            return humanInterval(copy.due - Date.now());
+        }
+
+        function humanInterval(ms) {
+            if (ms < 55 * MINUTE) return Math.max(1, Math.round(ms / MINUTE)) + 'm';
+            if (ms < 24 * 60 * MINUTE) return Math.round(ms / (60 * MINUTE)) + 'h';
+            const days = ms / DAY;
+            if (days < 30) return Math.round(days) + 'd';
+            if (days < 365) return Math.round(days / 30) + 'mo';
+            return (days / 365).toFixed(1) + 'y';
+        }
+
+        function dueCards() {
+            const now = Date.now();
+            return (state.wordBank || []).filter(c => !c.stage || (c.due || 0) <= now);
+        }
+
+        function cardCounts() {
+            const now = Date.now();
+            const bank = state.wordBank || [];
+            return {
+                total: bank.length,
+                due: bank.filter(c => !c.stage || (c.due || 0) <= now).length,
+                learning: bank.filter(c => c.stage === 'learning').length,
+                known: bank.filter(c => c.stage === 'review' && (c.interval || 0) >= 21 * DAY).length
+            };
         }
 
         // ==================== LOCAL GRADING ====================
