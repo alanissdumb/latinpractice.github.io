@@ -3748,31 +3748,46 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
             // Roughly one in three sentence questions is a genuine past-paper
             // sentence rather than a generated one.
             const PHRASE_TYPES = ['latToEng', 'engToLat'];
+            // A focus topic is optional, but when supplied it takes priority over
+            // general variety: examples and generated questions should drill it.
+            const focusTopic = state.practice.focusTopic ? state.practice.focusTopic.trim() : '';
             const realQuestions = [];
             if (PHRASE_TYPES.includes(type)) {
-                const pairs = parsePhrasePairs();
-                const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
-                takeUnusedPairs(pairs, want).forEach(p => {
-                    realQuestions.push({
-                        type,
-                        prompt: type === 'latToEng' ? p.lat : p.eng,
-                        target: type === 'latToEng' ? p.eng : p.lat,
-                        extra: '', source: 'past-paper'
+                let pairs = parsePhrasePairs();
+                if (focusTopic) {
+                    const fLower = focusTopic.toLowerCase();
+                    pairs = pairs.filter(p => p.lat.toLowerCase().includes(fLower) || p.eng.toLowerCase().includes(fLower));
+                }
+                if (pairs.length > 0) {
+                    const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
+                    takeUnusedPairs(pairs, want).forEach(p => {
+                        realQuestions.push({
+                            type,
+                            prompt: type === 'latToEng' ? p.lat : p.eng,
+                            target: type === 'latToEng' ? p.eng : p.lat,
+                            extra: '', source: 'past-paper'
+                        });
                     });
-                });
+                }
             }
             if (SENTENCE_TYPES.includes(type) && type !== 'unseen') {
-                const pairs = parseStylePairs();
-                const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
-                takeUnusedPairs(pairs, want).forEach(p => {
-                    realQuestions.push({
-                        type,
-                        prompt: type === 'latSentence' ? p.lat : p.eng,
-                        target: type === 'latSentence' ? p.eng : p.lat,
-                        extra: '',
-                        source: 'past-paper'
+                let pairs = parseStylePairs();
+                if (focusTopic) {
+                    const fLower = focusTopic.toLowerCase();
+                    pairs = pairs.filter(p => p.lat.toLowerCase().includes(fLower) || p.eng.toLowerCase().includes(fLower));
+                }
+                if (pairs.length > 0) {
+                    const want = Math.min(pairs.length, Math.max(1, Math.round(count / 3)));
+                    takeUnusedPairs(pairs, want).forEach(p => {
+                        realQuestions.push({
+                            type,
+                            prompt: type === 'latSentence' ? p.lat : p.eng,
+                            target: type === 'latSentence' ? p.eng : p.lat,
+                            extra: '',
+                            source: 'past-paper'
+                        });
                     });
-                });
+                }
             }
             const aiCount = Math.max(0, count - realQuestions.length);
 
@@ -3826,22 +3841,30 @@ MEASURED PROFILE OF THIS TEACHER — computed from ${m.sentenceCount} of their r
                     // coming out as miniature sentences with verbs in them.
                     const allPairs = PHRASE_TYPES.includes(type) ? parsePhrasePairs() : parseAllPairs();
                     if (allPairs.length) {
+                        // Prefer matching teacher examples when the student has set
+                        // a focus topic. If none literally match, retain all examples
+                        // as style references while the prompt still enforces focus.
+                        let stylePool = allPairs;
+                        if (focusTopic) {
+                            const fLower = focusTopic.toLowerCase();
+                            const matching = allPairs.filter(p => p.lat.toLowerCase().includes(fLower) || p.eng.toLowerCase().includes(fLower));
+                            if (matching.length > 0) stylePool = matching;
+                        }
                         if (PHRASE_TYPES.includes(type)) {
-                            const pool = shuffled(allPairs);
+                            const pool = shuffled(stylePool);
                             for (let i = 0; i < aiCount; i++) assignedSkeletons.push(pool[i % pool.length]);
-                            styleContext = `\n\nPHRASE MODELS — real phrases set by this student's teacher, ASSIGNED one per question. Question N must have the same grammatical shape as model N (same kind of preposition or case, same use of adjective, demonstrative or comparative), but different words.
-${assignedSkeletons.map((p, i) => `${i + 1}. ${p.eng} = ${p.lat}`).join('\n')}`;
+                            styleContext = focusTopic
+                                ? `\n\nPHRASE MODELS — use these teacher phrase examples for register and tone, but EVERY generated phrase MUST strictly focus on testing "${focusTopic}". Keep the same grammatical shape as model N (same kind of preposition or case, same use of adjective, demonstrative or comparative), but use different words.\n${assignedSkeletons.map((p, i) => `${i + 1}. ${p.eng} = ${p.lat}`).join('\n')}`
+                                : `\n\nPHRASE MODELS — real phrases set by this student's teacher, ASSIGNED one per question. Question N must have the same grammatical shape as model N (same kind of preposition or case, same use of adjective, demonstrative or comparative), but different words.\n${assignedSkeletons.map((p, i) => `${i + 1}. ${p.eng} = ${p.lat}`).join('\n')}`;
                         } else if (SENTENCE_TYPES.includes(type)) {
-                            const pool = shuffled(allPairs);
+                            const pool = shuffled(stylePool);
                             for (let i = 0; i < aiCount; i++) assignedSkeletons.push(pool[i % pool.length]);
                             // A wider reference pool so the vocabulary rule below
                             // has enough vetted words to draw on.
                             const reference = shuffled(allPairs).slice(0, 30);
-                            styleContext = `\n\nSKELETONS — each of these is a real sentence set by this student's own teacher, and they are ASSIGNED, one per question. Question N must reuse the grammatical shape of skeleton N: the same clause structure, the same construction, the same sequence of tenses. Everything else must change — new people, new vocabulary, a new situation. Never reproduce a skeleton or merely swap one word out of it.
-${assignedSkeletons.map((p, i) => `${i + 1}. ${p.lat} = ${p.eng}`).join('\n')}
-
-FURTHER REAL EXAMPLES — not assigned, but their vocabulary is approved for use:
-${reference.map(p => p.lat).join('\n')}`;
+                            styleContext = focusTopic
+                                ? `\n\nSKELETONS & REFERENCE — use these teacher sentences as style references for length and vocabulary, but EVERY generated question must specifically test "${focusTopic}". Adapt/rewrite each skeleton so the focus concept is required; do not copy it.\n${assignedSkeletons.map((p, i) => `${i + 1}. ${p.lat} = ${p.eng}`).join('\n')}\n\nFURTHER REAL EXAMPLES — approved vocabulary and style references:\n${reference.map(p => p.lat).join('\n')}`
+                                : `\n\nSKELETONS — each of these is a real sentence set by this student's own teacher, and they are ASSIGNED, one per question. Question N must reuse the grammatical shape of skeleton N: the same clause structure, the same construction, the same sequence of tenses. Everything else must change — new people, new vocabulary, a new situation. Never reproduce a skeleton or merely swap one word out of it.\n${assignedSkeletons.map((p, i) => `${i + 1}. ${p.lat} = ${p.eng}`).join('\n')}\n\nFURTHER REAL EXAMPLES — not assigned, but their vocabulary is approved for use:\n${reference.map(p => p.lat).join('\n')}`;
                         } else {
                             styleContext = `\n\nReal examples from this student's tests, for register and difficulty:\n${shuffled(allPairs).slice(0, 12).map(p => `${p.lat} = ${p.eng}`).join('\n')}`;
                         }
@@ -3858,8 +3881,11 @@ ${reference.map(p => p.lat).join('\n')}`;
 KNOWN WEAK SPOTS — these are the exact mistakes this student keeps making in real tests. AT LEAST HALF of the questions in this batch must force the student to get one of these right. Do not mention the weak spot in the question; just build the sentence so it cannot be answered correctly without handling it.
 ${weak.map(w => '- ' + w).join('\n')}` : '';
 
-                    const focusContext = state.practice.focusTopic
-                        ? `\nThe student has asked to focus on: "${state.practice.focusTopic}". Where this question type allows it, make most questions genuinely require that concept. Don't force it where it doesn't fit.`
+                    const focusHeader = focusTopic
+                        ? `\n*** MANDATORY FOCUS TOPIC: "${focusTopic}" ***\nYOUR NUMBER ONE PRIORITY FOR THIS BATCH IS TO DRILL AND TEST "${focusTopic}". Every single question generated in this batch MUST explicitly focus on and require understanding of "${focusTopic}". Do NOT generate questions testing unrelated grammar concepts when a focus topic is specified.\n`
+                        : '';
+                    const focusContext = focusTopic
+                        ? `\n\nPRIMARY FOCUS OVERRIDE: The user has explicitly set the focus topic to "${focusTopic}". Make sure EVERY question directly tests and features "${focusTopic}". This requirement takes priority over general variety.`
                         : '';
 
                     const lengthInstruction = (type === 'latSentence' || type === 'engSentence')
@@ -4000,9 +4026,11 @@ SEQUENCE OF TENSES — these are the errors that matter most, get them exactly r
 
 BEFORE YOU ANSWER: re-read each Latin sentence you have written. Check the case of every noun, the agreement of every adjective and participle, and the mood and tense of every verb in a subordinate clause against the rules above. Check that each sentence describes something a person could picture and that the people in it plausibly go together. Fix anything wrong, and if you cannot fix it, replace the sentence with a simpler one you are certain of.` : '';
 
-                    const varietyInstruction = `\nVariety is the priority. Across these ${aiCount} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
+                    const varietyInstruction = focusTopic
+                        ? `\nFOCUS TOPIC IS MANDATORY: All ${aiCount} questions MUST drill "${focusTopic}". Vary the vocabulary, persons, tenses, and scenarios across the questions so no two feel identical, while keeping "${focusTopic}" as the core concept being tested in every question.`
+                        : `\nVariety is the priority. Across these ${aiCount} questions, no two may share a sentence skeleton, an opening word, or a subject noun. Draw on a genuinely different construction each time — for this batch make sure you include, among others: ${shuffled(CONSTRUCTIONS).slice(0, 5).join('; ')}. Vary tense, person, number and voice between questions. Avoid the tired filler pattern of "<noun> lives in the city".`;
 
-                    const prompt = `You are setting practice questions for a Year 10 / VCE Latin student, working from the Oxford Latin Course. Your sentences must be indistinguishable from ones this student's own teacher would set — the SKELETONS below are real examples of that teacher's work, and matching them is the whole job.
+                    const prompt = `You are setting practice questions for a Year 10 / VCE Latin student, working from the Oxford Latin Course. ${focusHeader}Your sentences must be indistinguishable from ones this student's own teacher would set — the SKELETONS below are real examples of that teacher's work, and matching them is the whole job.
 
 Write ${aiCount} questions of type "${type}".${lengthInstruction}${directionInstruction}${varietyInstruction}${styleRules}
 
