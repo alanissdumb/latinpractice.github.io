@@ -4926,7 +4926,7 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
             btn.innerHTML = `Next <span class="text-xs opacity-70 ml-1">(Enter)</span> <i class="fa-solid fa-arrow-right ml-2"></i>`;
             btn.className = "w-full sm:w-auto px-10 py-4 bg-stone-900 hover:bg-black text-white font-bold rounded-xl shadow-lg transition text-lg mt-4";
             btn.disabled = false;
-            btn.onclick = () => { recordTypedResult(isCorrect && userAns !== ''); nextQuestion(); };
+            btn.onclick = () => { recordTypedResult(isCorrect && userAns !== '', q, userAns); nextQuestion(); };
             
             state.stats.completedToday++;
             state.stats.totalAnswered++;
@@ -4935,21 +4935,22 @@ Return ONLY JSON: {"correct": true or false, "feedback": "1-2 sentence teacher f
             saveState();
         }
 
-        function recordTypedResult(correct) {
+        function recordTypedResult(correct, question, answer) {
             state.quiz.results.push({ correct });
 
             // Keep what was actually missed, so it can be re-drilled later.
-            // Getting a question wrong once is the clearest possible signal
-            // about what to practise, and it was being thrown away.
-            if (!correct && q.prompt && q.target) {
+            // Pass the question and answer in explicitly: evaluateAnswer's
+            // local variables are not available inside this function.
+            if (!correct && question && question.prompt && question.target) {
                 state.mistakes = state.mistakes || [];
-                const already = state.mistakes.findIndex(m => m.prompt === q.prompt);
+                const already = state.mistakes.findIndex(m => m.prompt === question.prompt);
                 if (already >= 0) {
                     state.mistakes[already].misses++;
                     state.mistakes[already].at = Date.now();
+                    state.mistakes[already].yours = answer;
                 } else {
-                    state.mistakes.push({ type: q.type, prompt: q.prompt, target: q.target,
-                                          yours: userAns, misses: 1, at: Date.now() });
+                    state.mistakes.push({ type: question.type, prompt: question.prompt, target: question.target,
+                                          yours: answer, misses: 1, at: Date.now() });
                 }
                 // Oldest first out, so the list stays a working set rather than
                 // an archive.
